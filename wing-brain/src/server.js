@@ -16,6 +16,9 @@ import { TuneSession } from './tune/session.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
 
+// .env holds ANTHROPIC_API_KEY on the brain box; absent in fresh clones.
+try { process.loadEnvFile(path.join(root, '.env')); } catch {}
+
 const config = JSON.parse(fs.readFileSync(path.join(root, 'config/default.json'), 'utf8'));
 if (process.env.MODE) config.mode = process.env.MODE;
 const room = JSON.parse(fs.readFileSync(path.join(root, 'config/room.json'), 'utf8'));
