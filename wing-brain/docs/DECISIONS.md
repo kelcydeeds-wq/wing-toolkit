@@ -71,3 +71,24 @@ reviewed and reversed if wrong.
   float32 rounding error (`1.399999976158142`). Tests compare OSC-transported
   numbers with a small tolerance, not `===`; production code was already
   tolerant of this since guardrail clamping rounds to 1 decimal place anyway.
+- **Part B scripts live in `wing-brain/scripts/`**, not the toolkit-root
+  `scripts/` (which holds unrelated REAPER bench tooling). The audit tools
+  need `../src/wing/osc.js` and `../config/*.json` directly, so they belong
+  inside the wing-brain package. `npm run record` in package.json already
+  assumed this layout.
+- **`wing-schema.mjs` is the single source of truth for Wing OSC addresses**,
+  shared by dump/plan/apply-remap so they can't silently disagree about what
+  a "channel" looks like. Every address in it is a best guess (see its header
+  TODO(church) block) — counts (16 buses, 8 matrices, 16 DCAs, 4 EQ bands, 12
+  user keys) are equally unconfirmed guesses, not spec.
+- **`config/target-layout.json`** encodes the target channel ranges from the
+  task brief (1-5 pastor+vocals, 6-10 keys+spare, 11-16 guitars/bass+spares,
+  17-23 drums, 24 vocal-FX-DCA return, 25 crown mics, 26-38 spare, 39-40
+  osc/talkback) so plan-remap has a machine-readable target instead of a
+  hardcoded one.
+- **dump-wing-state's `--mock` seed is a deliberately half-organized "before"
+  state** (named channels scattered across the range, "Vox FX Return" parked
+  at channel 30 instead of its target slot 24, live DCA/mute-group/bus-send
+  references on it) — an empty/pristine mock would give plan-remap nothing
+  real to reorganize and the tool chain would look like it works without
+  proving it.

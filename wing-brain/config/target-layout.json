@@ -1,0 +1,13 @@
+{
+  "comment": "Target channel layout for the church audit remap. Ranges are channel-strip slots (1-40). Source: task brief for the Wing channel reorg, not yet walked on site -- confirm against dump-wing-state output before executing apply-remap.",
+  "ranges": [
+    { "start": 1, "end": 5, "label": "Pastor + vocals" },
+    { "start": 6, "end": 10, "label": "Keys + spare" },
+    { "start": 11, "end": 16, "label": "Guitars/bass + spares" },
+    { "start": 17, "end": 23, "label": "Drums" },
+    { "start": 24, "end": 24, "label": "Vocal FX DCA return" },
+    { "start": 25, "end": 25, "label": "Crown mics" },
+    { "start": 26, "end": 38, "label": "Unassigned / spare" },
+    { "start": 39, "end": 40, "label": "Oscillator / talkback" }
+  ]
+}
