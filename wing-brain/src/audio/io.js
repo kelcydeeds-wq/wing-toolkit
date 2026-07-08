@@ -124,12 +124,15 @@ class MockAudioIO {
   roomIR(outputId, pos) {
     const sr = this.sr;
     const speakers = {
-      main_l: { x: 5, y: 1 },
-      main_r: { x: 13, y: 1 },
-      sub: { x: 9, y: 0.5 }
+      main_l: { x: 5.9, y: -0.8, z: 5.0 },
+      main_r: { x: 12.7, y: -0.8, z: 5.0 },
+      sub:    { x: 9.3, y: -0.8, z: 5.5 },
+      fill_l: { x: 1.5, y: 0, z: 1.0 },
+      fill_c: { x: 9.6, y: 0, z: 1.0 },
+      fill_r: { x: 17.3, y: 0, z: 1.0 }
     };
     const spk = speakers[outputId] || speakers.main_l;
-    const dist = Math.hypot(pos.x - spk.x, pos.y - spk.y);
+    const dist = Math.hypot(pos.x - spk.x, pos.y - spk.y, (spk.z ?? 0) - (pos.z ?? 1.2));
     const delaySamp = Math.floor((dist / 343) * sr);
 
     const len = delaySamp + Math.floor(0.5 * sr);

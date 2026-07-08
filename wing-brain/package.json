@@ -1,23 +1,20 @@
 {
   "name": "wing-brain",
   "version": "0.1.0",
-  "description": "AI-assisted live mixing brain — System Tune module (guided PA measurement + tuning for Behringer Wing)",
+  "description": "AI-assisted live mixing brain \u2014 System Tune module (guided PA measurement + tuning for Behringer Wing)",
   "type": "module",
   "main": "src/server.js",
   "scripts": {
-    "dev": "cross-env MODE=mock node src/server.js",
+    "dev": "MODE=mock node src/server.js",
     "start": "node src/server.js",
     "test": "node --test test/*.test.js"
   },
   "dependencies": {
     "express": "^4.19.0",
-    "osc": "^2.4.4",
-    "ws": "^8.17.0"
+    "ws": "^8.17.0",
+    "osc": "^2.4.4"
   },
   "engines": {
     "node": ">=20"
-  },
-  "devDependencies": {
-    "cross-env": "^10.1.0"
   }
 }

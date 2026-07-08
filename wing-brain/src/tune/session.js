@@ -13,6 +13,7 @@ import { makeESS, extractIR, findDelay, magnitudeResponse, polarity, rmsDbfs }
   from '../dsp/measure.js';
 import { spatialAverage, targetOnGrid, recommendEQ, recommendDelays }
   from '../dsp/tune.js';
+import { buildAnalysisPayload, claudeTune, validate } from './advisor.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -85,6 +86,13 @@ export class TuneSession {
         const { ref, mic } = await this.audio.playAndCapture(this.sweep, this.captureSeconds);
 
         const delay = findDelay(ref, mic, this.cfg.audio.sampleRate);
+        const predicted = this.predictArrivalMs(output.id, pos);
+        if (predicted !== null && Math.abs(delay.ms - predicted) > 8) {
+          this.emit('warning', {
+            message: `Geometry mismatch at ${pos.label} / ${output.label}: measured ${delay.ms.toFixed(1)} ms vs predicted ${predicted.toFixed(1)} ms. Wrong position, wrong output soloed, or routing issue?`,
+            position: pos.id, output: output.id
+          });
+        }
         if (delay.confidence < 3) {
           this.emit('warning', {
             message: `Low confidence on ${output.label} at ${pos.label} — check mic/routing, retake recommended.`,
@@ -96,6 +104,7 @@ export class TuneSession {
 
         const result = {
           positionId: pos.id, positionWeight: pos.weight ?? 1,
+          zone: pos.zone || 'main',
           outputId: output.id,
           delayMs: delay.ms, confidence: Math.round(delay.confidence),
           polarity: polarity(ir),
@@ -109,7 +118,7 @@ export class TuneSession {
 
       this.posIndex++;
       if (this.posIndex >= this.positions.length) {
-        this.finish();
+        await this.finish();
       } else {
         this.state = 'waiting_position';
         this.emit('session', this.snapshot());
@@ -130,15 +139,56 @@ export class TuneSession {
     }
   }
 
-  finish() {
+  async finish() {
     if (this.mode === 'verify') {
       this.recommendations = this.buildVerifyReport();
       this.state = 'done';
-    } else {
-      this.recommendations = this.buildRecommendations();
-      this.state = 'review';
+      this.emit('session', this.snapshot());
+      return;
     }
+    const localRec = this.buildRecommendations();
+    localRec.source = 'local';
+
+    this.emit('info', { message: 'Measurements done — sending analysis to Claude for tuning…' });
+    const payload = buildAnalysisPayload({
+      config: this.cfg, room: this.room, results: this.results, localRec
+    });
+    this.lastAnalysisPayload = payload; // exposed for export/debug
+
+    const advice = await claudeTune(payload);
+    if (advice) {
+      const v = validate(advice, this.cfg);
+      // Merge Claude's filters/delays over the local scaffold (keeps curves for charts)
+      for (const [id, o] of Object.entries(localRec.perOutput)) {
+        if (v.outputs[id]) {
+          o.filters = v.outputs[id].filters;
+          o.note = v.outputs[id].note;
+        }
+      }
+      for (const [id, d] of Object.entries(v.delays)) {
+        if (localRec.delays[id]) localRec.delays[id].addDelayMs = d.addDelayMs;
+      }
+      localRec.source = 'claude';
+      localRec.summary = v.summary;
+      localRec.warnings = v.warnings;
+      this.emit('info', { message: 'Claude tuning received.' });
+    } else {
+      this.emit('warning', { message: 'Claude unavailable — using local recommender (offline fallback).' });
+    }
+
+    this.recommendations = localRec;
+    this.state = 'review';
     this.emit('session', this.snapshot());
+  }
+
+
+  /** Direct-path arrival prediction from room geometry (ms). Null if unknown. */
+  predictArrivalMs(outputId, pos) {
+    const spk = (this.room.speakers || []).find((x) => x.id === outputId);
+    if (!spk || pos.x === undefined) return null;
+    const dz = (spk.z ?? 0) - (pos.z ?? 1.2);
+    const d = Math.hypot(spk.x - pos.x, spk.y - pos.y, dz);
+    return (d / 343) * 1000;
   }
 
   buildRecommendations() {
@@ -152,8 +202,9 @@ export class TuneSession {
       delaysByOutput[output.id] = rs.map((r) => r.delayMs);
 
       const grid = rs[0].freqs;
+      const weighted = rs.filter((r) => r.positionWeight > 0);
       const { avg, varDb } = spatialAverage(
-        rs.map((r) => ({ magDb: Float64Array.from(r.magDb), weight: r.positionWeight }))
+        (weighted.length ? weighted : rs).map((r) => ({ magDb: Float64Array.from(r.magDb), weight: r.positionWeight || 1 }))
       );
       const target = targetOnGrid(this.cfg.targetCurve.points, Float64Array.from(grid));
       const filters = recommendEQ({
@@ -171,7 +222,37 @@ export class TuneSession {
     }
 
     const delays = recommendDelays(delaysByOutput, this.cfg.outputs[0].id);
-    return { perOutput, delays, applied: false };
+    const zoneReport = this.buildZoneReport();
+    return { perOutput, delays, zoneReport, applied: false };
+  }
+
+
+  /** Per-zone average level deltas vs main floor, in coarse bands — truth-telling,
+   *  not correction. Balcony zones are excluded from system EQ by design. */
+  buildZoneReport() {
+    const bands = [[60, 250, 'low'], [250, 2000, 'mid'], [2000, 12000, 'high']];
+    const zones = {};
+    for (const r of this.results) {
+      (zones[r.zone] ||= []).push(r);
+    }
+    if (!zones.main) return null;
+    const bandAvg = (rs, lo, hi) => {
+      let s2 = 0, n = 0;
+      for (const r of rs) {
+        r.freqs.forEach((f, i) => { if (f >= lo && f < hi) { s2 += r.magDb[i]; n++; } });
+      }
+      return s2 / Math.max(n, 1);
+    };
+    const report = {};
+    for (const [zone, rs] of Object.entries(zones)) {
+      if (zone === 'main') continue;
+      report[zone] = {};
+      for (const [lo, hi, name] of bands) {
+        const delta = bandAvg(rs, lo, hi) - bandAvg(zones.main, lo, hi);
+        report[zone][name] = Math.round(delta * 10) / 10;
+      }
+    }
+    return Object.keys(report).length ? report : null;
   }
 
   buildVerifyReport() {

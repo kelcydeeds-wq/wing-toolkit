@@ -41,7 +41,7 @@
   .row{display:flex; gap:10px}
   .row>button{flex:1}
 
-  #roomMap,#roomMap2{width:100%; border-radius:10px; background:var(--panel2); display:block}
+  #roomMap{width:100%; border-radius:10px; background:var(--panel2); display:block}
   .poslist{margin:10px 0 0; padding:0; list-style:none}
   .poslist li{display:flex; justify-content:space-between; padding:7px 2px;
     border-bottom:1px dashed var(--line); color:var(--dim); font-size:14px}
@@ -192,6 +192,16 @@ function renderReview(){
   const el = $('reviewView'); el.innerHTML = '';
   const rec = session.recommendations; if (!rec) return;
 
+  // Who tuned this
+  const src = rec.source === 'claude'
+    ? '<span class="ok">Tuned by Claude</span>'
+    : '<span style="color:var(--amber)">Local recommender (offline fallback)</span>';
+  let head = `<div class="card"><h2>Tuning</h2><p style="margin:0 0 6px">${src}</p>`;
+  if (rec.summary) head += `<p style="color:var(--dim);font-size:14px;margin:0">${rec.summary}</p>`;
+  if (rec.warnings?.length) head += rec.warnings.map(w=>`<p class="warn" style="font-size:13px;margin:8px 0 0">⚠ ${w}</p>`).join('');
+  head += `<p style="color:var(--dim);font-size:12px;margin:10px 0 0"><a href="/analysis.json" style="color:var(--blue)" target="_blank">export raw analysis</a></p></div>`;
+  el.insertAdjacentHTML('beforeend', head);
+
   // Delays
   let rows = '';
   for (const [id, d] of Object.entries(rec.delays)) {
@@ -201,12 +211,28 @@ function renderReview(){
   el.insertAdjacentHTML('beforeend', `<div class="card"><h2>Alignment</h2>
     <table><tr><th>Output</th><th style="text-align:right">Arrival</th><th style="text-align:right">Add delay</th></tr>${rows}</table></div>`);
 
+  // Zone report (truth-telling, not correction)
+  if (rec.zoneReport) {
+    let zr = '';
+    for (const [zone, bands] of Object.entries(rec.zoneReport)) {
+      zr += `<tr><td>${zone.replace('_',' ')}</td>` +
+        ['low','mid','high'].map(b=>{
+          const v = bands[b];
+          const cls = Math.abs(v) > 3 ? 'warn' : '';
+          return `<td class="num ${cls}">${v>0?'+':''}${v} dB</td>`;
+        }).join('') + '</tr>';
+    }
+    el.insertAdjacentHTML('beforeend', `<div class="card"><h2>Zones vs main floor</h2>
+      <table><tr><th>Zone</th><th style="text-align:right">Low</th><th style="text-align:right">Mid</th><th style="text-align:right">High</th></tr>${zr}</table>
+      <p style="color:var(--dim);font-size:13px;margin:8px 0 0">Zone differences aren't fixed by system EQ — they're fill speaker alignment data. Main floor drives the correction.</p></div>`);
+  }
+
   // Per-output EQ
   for (const [id, o] of Object.entries(rec.perOutput)) {
     const cid = `trace_${id}`;
     let frows = o.filters.map(f =>
       `<tr><td>${f.type}</td><td class="num">${f.freq} Hz</td><td class="num">${f.gainDb>0?'+':''}${f.gainDb} dB</td><td class="num">Q ${f.q}</td><td style="color:var(--dim)">${f.reason}</td></tr>`).join('');
-    el.insertAdjacentHTML('beforeend', `<div class="card"><h2>${o.label}${o.polarityIssue?' — <span class="warn">check polarity</span>':''}</h2>
+    el.insertAdjacentHTML('beforeend', `<div class="card"><h2>${o.label}${o.polarityIssue?' — <span class="warn">check polarity</span>':''}</h2>${o.note?`<p style="color:var(--dim);font-size:13px;margin:0 0 8px">${o.note}</p>`:''}
       <canvas class="trace" id="${cid}" width="560" height="180"></canvas>
       <div class="legend"><span class="lg-avg"><b>—</b> measured avg</span><span class="lg-target"><b>—</b> target</span><span class="lg-corr"><b>—</b> corrected (est)</span></div>
       <table><tr><th>Type</th><th style="text-align:right">Freq</th><th style="text-align:right">Gain</th><th style="text-align:right">Q</th><th>Why</th></tr>${frows||'<tr><td colspan="5" style="color:var(--dim)">No correction needed</td></tr>'}</table></div>`);
@@ -240,36 +266,80 @@ function renderVerify(){
 function drawRoom(cv, highlightId){
   if (!room || !cv) return;
   const ctx = cv.getContext('2d');
-  const W = cv.width, H = cv.height;
+  const W = cv.width, H = cv.height, PAD = 14;
   ctx.clearRect(0,0,W,H);
-  const sx = W / room.width, sy = H / room.depth;
 
-  // stage
-  ctx.fillStyle = '#22262d';
-  ctx.fillRect(0, 0, W, room.stageDepth * sy);
-  ctx.fillStyle = '#8b919a'; ctx.font = '11px ui-monospace';
-  ctx.fillText('STAGE', 10, 16);
+  // World bounds from walls polygon (falls back to width/depth rectangle)
+  const pts = room.walls || [[0,0],[room.width,0],[room.width,room.depth],[0,room.depth]];
+  const xs = pts.map(p=>p[0]), ys = pts.map(p=>p[1]);
+  const minX = Math.min(...xs), maxX = Math.max(...xs);
+  const minY = Math.min(...ys), maxY = Math.max(...ys);
+  const s = Math.min((W-2*PAD)/(maxX-minX), (H-2*PAD)/(maxY-minY));
+  const X = (x)=>PAD+(x-minX)*s, Y=(y)=>PAD+(y-minY)*s;
 
+  // Walls
+  ctx.beginPath();
+  pts.forEach((p,i)=> i?ctx.lineTo(X(p[0]),Y(p[1])):ctx.moveTo(X(p[0]),Y(p[1])));
+  ctx.closePath();
+  ctx.fillStyle = '#171b20'; ctx.fill();
+  ctx.strokeStyle = '#3a4048'; ctx.lineWidth = 2; ctx.stroke();
+
+  ctx.font = '11px ui-monospace';
+
+  // Stage
+  if (room.stage) {
+    const g = room.stage;
+    ctx.fillStyle = '#22262d';
+    ctx.fillRect(X(g.x), Y(g.y), g.w*s, g.h*s);
+    ctx.fillStyle = '#8b919a';
+    ctx.fillText('STAGE', X(g.x)+8, Y(g.y)+16);
+  }
+  // Balcony footprint
+  if (room.balcony) {
+    const b = room.balcony;
+    ctx.fillStyle = 'rgba(255,180,84,0.08)';
+    ctx.fillRect(X(b.x), Y(b.y), b.w*s, b.h*s);
+    ctx.strokeStyle = 'rgba(255,180,84,0.5)'; ctx.setLineDash([6,4]);
+    ctx.strokeRect(X(b.x), Y(b.y), b.w*s, b.h*s);
+    ctx.setLineDash([]);
+    ctx.fillStyle = 'rgba(255,180,84,0.7)';
+    ctx.fillText('BALCONY (above)', X(b.x)+6, Y(b.y)+14);
+  }
+  // Booth
+  if (room.booth) {
+    const b = room.booth;
+    ctx.strokeStyle = '#3a4048';
+    ctx.strokeRect(X(b.x), Y(b.y), b.w*s, b.h*s);
+    ctx.fillStyle = '#5a616b';
+    ctx.fillText('FOH', X(b.x)+4, Y(b.y)-4);
+  }
+  // Speakers
+  for (const sp of room.speakers || []) {
+    const x = X(sp.x), y = Y(sp.y);
+    ctx.fillStyle = sp.id.startsWith('fill') ? '#6ab7ff' : '#ff6b5e';
+    ctx.beginPath();
+    ctx.moveTo(x, y-6); ctx.lineTo(x+6, y+5); ctx.lineTo(x-6, y+5);
+    ctx.closePath(); ctx.fill();
+  }
+  // Positions
   for (const p of room.positions) {
-    const x = p.x * sx, y = p.y * sy;
+    const x = X(p.x), y = Y(p.y);
     const isHi = p.id === highlightId;
     ctx.beginPath();
-    ctx.arc(x, y, isHi ? 14 : 8, 0, Math.PI * 2);
-    ctx.fillStyle = isHi ? '#ffb454' : '#3a4048';
+    ctx.arc(x, y, isHi ? 13 : 7, 0, Math.PI*2);
+    ctx.fillStyle = isHi ? '#ffb454' : (p.zone==='balcony' ? '#7a6a4a' : p.zone==='under_balcony' ? '#4a5568' : '#3a4048');
     ctx.fill();
-    if (isHi) { ctx.strokeStyle = '#ffb454'; ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.arc(x, y, 22, 0, Math.PI*2); ctx.stroke(); }
+    if (isHi) { ctx.strokeStyle='#ffb454'; ctx.lineWidth=2;
+      ctx.beginPath(); ctx.arc(x, y, 20, 0, Math.PI*2); ctx.stroke(); }
     ctx.fillStyle = isHi ? '#ffb454' : '#8b919a';
-    const tw = ctx.measureText(p.label).width;
-    const tx = x + 18 + tw > W - 6 ? x - 18 - tw : x + 18;
-    ctx.fillText(p.label, tx, y + 4);
+    ctx.fillText(p.label, x+16, y+4);
   }
 }
 
 function renderPosList(){
   const ul = $('posList'); if (!ul || !room) return;
   ul.innerHTML = room.positions.map(p =>
-    `<li><span>${p.label}</span><span>${p.x}m, ${p.y}m · w${p.weight}</span></li>`).join('');
+    `<li><span>${p.label}</span><span>${p.zone} · w${p.weight}</span></li>`).join('');
 }
 
 function seriesFrom(t){ return { freqs:t.freqs, magDb:t.magDb, color:'#6ab7ff' }; }

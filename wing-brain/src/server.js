@@ -16,6 +16,9 @@ import { TuneSession } from './tune/session.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
 
+// .env holds ANTHROPIC_API_KEY on the brain box; absent in fresh clones.
+try { process.loadEnvFile(path.join(root, '.env')); } catch {}
+
 const config = JSON.parse(fs.readFileSync(path.join(root, 'config/default.json'), 'utf8'));
 if (process.env.MODE) config.mode = process.env.MODE;
 const room = JSON.parse(fs.readFileSync(path.join(root, 'config/room.json'), 'utf8'));
@@ -26,6 +29,13 @@ const wing = makeWing(config);
 const app = express();
 app.use(express.json());
 app.use(express.static(path.join(root, 'public')));
+
+// Export the last analysis payload — paste it into Claude (chat or Claude Code)
+// for a manual tune before the API key is set up on the brain box.
+app.get('/analysis.json', (_req, res) => {
+  if (!session.lastAnalysisPayload) return res.status(404).json({ error: 'run a Full Tune first' });
+  res.json(session.lastAnalysisPayload);
+});
 
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
