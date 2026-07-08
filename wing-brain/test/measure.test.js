@@ -1,7 +1,8 @@
 // Sanity tests for the DSP core — run with `npm test`.
 import { test } from 'node:test';
 import assert from 'node:assert';
-import { makeESS, findDelay, extractIR, magnitudeResponse, isClipped, estimateSnrDb }
+import { makeESS, findDelay, extractIR, magnitudeResponse, isClipped, estimateSnrDb,
+         makeBlip, scaleBuffer, peakDbfs }
   from '../src/dsp/measure.js';
 
 test('cross-correlation finds a known delay and cancels shared latency', () => {
@@ -58,4 +59,26 @@ test('estimateSnrDb reads high for a clean tone over silence, low for noise-only
   const noiseOnly = new Float64Array(n).map(() => (Math.random() - 0.5) * 1e-4);
   const snrNoisy = estimateSnrDb(noiseOnly, sr);
   assert.ok(snrNoisy < snrClean, 'noise-only capture should read lower SNR than a clean tone');
+});
+
+test('makeBlip produces a short, faded, level-scaled tone burst', () => {
+  const sr = 48000;
+  const blip = makeBlip({ freq: 1000, seconds: 1, sampleRate: sr, levelDbfs: -18 });
+  assert.equal(blip.length, sr);
+  assert.ok(Math.abs(blip[0]) < 1e-6, 'fade-in should start near zero');
+  assert.ok(Math.abs(blip[blip.length - 1]) < 1e-6, 'fade-out should end near zero');
+  const peak = peakDbfs(blip);
+  assert.ok(peak > -19 && peak < -17, `expected peak near -18 dBFS, got ${peak}`);
+});
+
+test('scaleBuffer applies relative gain and passes through unchanged at 0 dB / undefined', () => {
+  const x = new Float64Array([0.1, -0.2, 0.3]);
+  assert.strictEqual(scaleBuffer(x, undefined), x, 'no trim should return the same buffer, no copy');
+  assert.strictEqual(scaleBuffer(x, 0), x, '0 dB trim should return the same buffer, no copy');
+  const down6 = scaleBuffer(x, -6);
+  const expectedGain = Math.pow(10, -6 / 20);
+  for (let i = 0; i < x.length; i++) {
+    assert.ok(Math.abs(down6[i] - x[i] * expectedGain) < 1e-9);
+  }
+  assert.notStrictEqual(down6, x, 'trimmed buffer must be a new array, not a mutation');
 });

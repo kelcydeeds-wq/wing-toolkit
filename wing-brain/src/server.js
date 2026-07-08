@@ -58,7 +58,8 @@ wss.on('connection', (ws) => {
     try { msg = JSON.parse(raw); } catch { return; }
     try {
       switch (msg.action) {
-        case 'start':    session.start(msg.mode); break;          // mode: 'verify' | 'full'
+        case 'start':     session.start(msg.mode); break;         // mode: 'verify' | 'full'
+        case 'preflight': await session.preflightCheck(); break;
         case 'ready':    await session.ready(); break;
         case 'retake':   session.retake(); break;
         case 'apply':    await session.apply(); break;            // the only console write

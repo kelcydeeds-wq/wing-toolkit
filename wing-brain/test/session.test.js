@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert';
 import fs from 'node:fs';
 import { TuneSession } from '../src/tune/session.js';
-import { makeESS, fftConvolve } from '../src/dsp/measure.js';
+import { makeESS, fftConvolve, peakDbfs } from '../src/dsp/measure.js';
 
 const config = JSON.parse(fs.readFileSync(new URL('../config/default.json', import.meta.url), 'utf8'));
 const room = JSON.parse(fs.readFileSync(new URL('../config/room.json', import.meta.url), 'utf8'));
@@ -147,4 +147,97 @@ test('warns on low SNR (quiet capture near the noise floor)', async () => {
 
   assert.ok(session.results[0].snrDb < 15, `expected low SNR, got ${session.results[0].snrDb}`);
   assert.ok(log.some((e) => e.event === 'warning' && /signal-to-noise/.test(e.payload.message)));
+});
+
+/* -------------------- sweep level trim ---------------------- */
+
+test('runSweep applies a negative output trim so playback level drops, without skewing the measured curve', async () => {
+  let lastSweepPeak = null;
+  const audio = {
+    playAndCapture: async (sweepBuf) => {
+      lastSweepPeak = peakDbfs(sweepBuf);
+      return cleanCapture(20);
+    }
+  };
+  const oneOutputCfg = { ...config, outputs: [config.outputs[0]] };
+  const session = new TuneSession({ config: oneOutputCfg, room, audio, wing: fakeWing(), emit: () => {} });
+
+  await session.runSweep({ ...config.outputs[0], sweepTrimDb: -6 });
+  const trimmedPeak = lastSweepPeak;
+  await session.runSweep({ ...config.outputs[0] }); // no trim
+  const fullPeak = lastSweepPeak;
+
+  assert.ok(Math.abs((fullPeak - trimmedPeak) - 6) < 0.1,
+    `expected the -6 dB trim to lower playback peak by ~6 dB, saw ${fullPeak} vs ${trimmedPeak}`);
+});
+
+/* ------------------------ pre-flight ------------------------- */
+
+/** Build a capture buffer with real silence padding around the blip, so the
+ *  windowed-RMS noise floor in estimateSnrDb has something genuine to read —
+ *  mirrors what MockAudioIO does by sizing the buffer off captureSeconds,
+ *  not off the blip itself. */
+function echoCapture(blip, captureSeconds, gain = 0.5) {
+  const n = Math.floor(captureSeconds * sr);
+  const mic = new Float64Array(n);
+  for (let i = 0; i < blip.length && i + 100 < n; i++) mic[i + 100] = blip[i] * gain;
+  return mic;
+}
+
+test('preflightCheck reports pass for every enabled output when signal returns', async () => {
+  const audio = {
+    setScenario: () => {},
+    playAndCapture: async (blip, captureSeconds) => {
+      // Simulate a live loudspeaker: mic hears a scaled, slightly delayed copy of the blip.
+      const mic = echoCapture(blip, captureSeconds);
+      return { ref: blip, mic };
+    }
+  };
+  const { log, emit } = collectEvents();
+  const session = new TuneSession({ config, room, audio, wing: fakeWing(), emit });
+
+  await session.preflightCheck();
+
+  const enabledCount = config.outputs.filter((o) => o.enabled !== false).length;
+  assert.equal(session.preflightResults.length, enabledCount);
+  assert.ok(session.preflightResults.every((r) => r.pass), 'every output with a live return should pass');
+  assert.equal(session.state, 'idle', 'preflight should leave the session idle when finished');
+  assert.ok(log.some((e) => e.event === 'info' && /Pre-flight OK/.test(e.payload.message)));
+});
+
+test('preflightCheck flags a specific output with no return signal', async () => {
+  // Only the dead output returns nothing; give the live one an actual echo by
+  // keying off which output was soloed via a stateful wing mock.
+  let currentOutput = null;
+  const wing = {
+    soloOutput: async (id) => { currentOutput = id; },
+    unmuteAll: async () => {}
+  };
+  const audioStateful = {
+    setScenario: () => {},
+    playAndCapture: async (blip, captureSeconds) => {
+      const n = Math.floor(captureSeconds * sr);
+      const mic = currentOutput === 'main_l' ? echoCapture(blip, captureSeconds) : new Float64Array(n);
+      return { ref: blip, mic };
+    }
+  };
+  const twoOutputCfg = { ...config, outputs: [config.outputs[0], { ...config.outputs[2], id: 'dead_sub' }] };
+  const { log, emit } = collectEvents();
+  const session = new TuneSession({ config: twoOutputCfg, room, audio: audioStateful, wing, emit });
+
+  await session.preflightCheck();
+
+  const live = session.preflightResults.find((r) => r.outputId === 'main_l');
+  const dead = session.preflightResults.find((r) => r.outputId === 'dead_sub');
+  assert.equal(live.pass, true);
+  assert.equal(dead.pass, false);
+  assert.ok(log.some((e) => e.event === 'warning' && /returned no usable signal/.test(e.payload.message)));
+});
+
+test('preflightCheck refuses to run while a session is already in progress', async () => {
+  const audio = { playAndCapture: async () => cleanCapture(20) };
+  const oneOutputCfg = { ...config, outputs: [config.outputs[0]] };
+  const session = new TuneSession({ config: oneOutputCfg, room, audio, wing: fakeWing(), emit: () => {} });
+  session.start('verify'); // state -> waiting_position
+  await assert.rejects(() => session.preflightCheck(), /cannot pre-flight while a session is running/);
 });

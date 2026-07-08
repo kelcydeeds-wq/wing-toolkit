@@ -94,6 +94,20 @@
         <button class="secondary" id="btnVerify">Verify System<br><small>~2 min · 1 position</small></button>
         <button class="amber" id="btnFull">Full Tune<br><small>guided · all positions</small></button>
       </div>
+      <button class="secondary" id="btnPreflight" style="margin-top:8px">Pre-flight Check<br><small>confirm every output returns signal before starting</small></button>
+    </div>
+    <div class="card hidden" id="preflightSummaryCard">
+      <h2>Last pre-flight</h2>
+      <ul class="poslist" id="preflightSummary"></ul>
+    </div>
+  </section>
+
+  <!-- PREFLIGHT -->
+  <section id="preflightView" class="hidden">
+    <div class="card">
+      <h2>Pre-flight Check</h2>
+      <p style="color:var(--dim); font-size:14px; margin:0 0 10px">Testing each output with a short tone. No mic position needed — leave the measurement mic anywhere with clear line of sight to the room.</p>
+      <ul class="poslist" id="preflightLive"></ul>
     </div>
   </section>
 
@@ -140,6 +154,7 @@ ws.onmessage = (e) => {
       <span class="${payload.snrDb>=15?'ok':'warn'}">SNR ${payload.snrDb} dB</span>
       ${payload.clipped?'<span class="warn">CLIPPED</span>':''}`; }
   if (event === 'measuring') setStatus(`Sweeping ${payload.output} @ ${payload.position}…`);
+  if (event === 'preflight_progress') renderPreflightLive(payload);
   if (event === 'warning') setStatus(payload.message, 'warn');
   if (event === 'error') setStatus(payload.message, 'warn');
   if (event === 'info') setStatus(payload.message, 'ok');
@@ -148,16 +163,45 @@ ws.onmessage = (e) => {
 function setStatus(t, cls){ const s=$('status'); if(!s) return; s.textContent=t; s.className=cls||''; }
 
 function show(id){
-  for (const v of ['home','sessionView','reviewView','verifyView']) $(v).classList.add('hidden');
+  for (const v of ['home','sessionView','reviewView','verifyView','preflightView']) $(v).classList.add('hidden');
   $(id).classList.remove('hidden');
+}
+
+function preflightRow({ label, status, pass, peakDbfs, snrDb }){
+  const cls = status === 'testing' ? '' : (pass ? 'ok' : 'warn');
+  const detail = status === 'testing' ? 'testing…'
+    : `${pass ? 'OK' : 'NO SIGNAL'} · peak ${peakDbfs} dBFS · SNR ${snrDb} dB`;
+  return `<li class="${cls}"><span>${label}</span><span>${detail}</span></li>`;
+}
+
+function renderPreflightLive(payload){
+  const ul = $('preflightLive');
+  const rows = (session?.preflightResults || []).slice();
+  const idx = rows.findIndex((r) => r.outputId === payload.outputId);
+  if (idx >= 0) rows[idx] = payload; else rows.push(payload);
+  ul.innerHTML = rows.map(preflightRow).join('');
+}
+
+function renderPreflightSummary(){
+  const card = $('preflightSummaryCard');
+  const results = session?.preflightResults || [];
+  if (!results.length) { card.classList.add('hidden'); return; }
+  card.classList.remove('hidden');
+  $('preflightSummary').innerHTML = results.map(preflightRow).join('');
 }
 
 function render(){
   $('modeBadge').textContent = (session?.mode || 'idle').toUpperCase();
-  $('exitBtn').classList.toggle('hidden', !session || session.state === 'idle');
+  $('exitBtn').classList.toggle('hidden', !session || session.state === 'idle' || session.state === 'preflight');
   const fab = $('fabInner'); fab.innerHTML = '';
 
-  if (!session || session.state === 'idle') { show('home'); return; }
+  if (session?.state === 'preflight') {
+    show('preflightView');
+    $('preflightLive').innerHTML = (session.preflightResults || []).map(preflightRow).join('');
+    return;
+  }
+
+  if (!session || session.state === 'idle') { show('home'); renderPreflightSummary(); return; }
 
   if (session.state === 'waiting_position' || session.state === 'measuring') {
     show('sessionView');
@@ -414,6 +458,7 @@ $('exitBtn').onclick = () => {
 };
 $('btnVerify').onclick = () => send({action:'start', mode:'verify'});
 $('btnFull').onclick   = () => send({action:'start', mode:'full'});
+$('btnPreflight').onclick = () => send({action:'preflight'});
 
 function mkBtn(html, cls, fn){
   const b=document.createElement('button');

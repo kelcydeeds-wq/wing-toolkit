@@ -9,8 +9,8 @@
 //               compares against stored baseline, writes nothing.
 //   'full'    — all positions, all outputs, produces recommendations.
 
-import { makeESS, extractIR, findDelay, magnitudeResponse, polarity, rmsDbfs,
-         isClipped, estimateSnrDb }
+import { makeESS, makeBlip, scaleBuffer, extractIR, findDelay, magnitudeResponse,
+         polarity, rmsDbfs, isClipped, estimateSnrDb, peakDbfs }
   from '../dsp/measure.js';
 import { spatialAverage, targetOnGrid, recommendEQ, recommendDelays }
   from '../dsp/tune.js';
@@ -34,14 +34,22 @@ export class TuneSession {
     this.positions = [];
     this.posIndex = 0;
     this.results = [];   // { positionId, outputId, delayMs, confidence, polarity, freqs, magDb, levelDbfs }
-    this.state = 'idle'; // idle | waiting_position | measuring | review | done
+    this.state = 'idle'; // idle | waiting_position | measuring | preflight | review | done
     this.recommendations = null;
+    this.preflightResults = [];
 
     const s = config.audio.sweep;
     const { sweep, inverse } = makeESS({ ...s, sampleRate: config.audio.sampleRate });
     this.sweep = sweep;
     this.inverse = inverse;
     this.captureSeconds = s.seconds + s.padSeconds;
+
+    const pf = config.audio.preflight || {};
+    this.blip = makeBlip({
+      freq: pf.blipFreq ?? 1000, seconds: pf.blipSeconds ?? 1,
+      sampleRate: config.audio.sampleRate, levelDbfs: s.levelDbfs
+    });
+    this.blipCaptureSeconds = pf.captureSeconds ?? ((pf.blipSeconds ?? 1) + 0.4);
   }
 
   snapshot() {
@@ -53,7 +61,8 @@ export class TuneSession {
       })),
       posIndex: this.posIndex,
       results: this.results.map(({ freqs, magDb, ...meta }) => meta), // meters only, traces sent separately
-      recommendations: this.recommendations
+      recommendations: this.recommendations,
+      preflightResults: this.preflightResults
     };
   }
 
@@ -86,10 +95,10 @@ export class TuneSession {
         await this.wing.soloOutput(output.id, this.cfg.outputs);
         await pause(400); // let mutes settle
 
-        let sweep = await this.runSweep();
+        let sweep = await this.runSweep(output);
         if (sweep.delay.confidence < LOW_CONFIDENCE_THRESHOLD) {
           this.emit('info', { message: `Low confidence on ${output.label} at ${pos.label} — retrying sweep once…` });
-          const retry = await this.runSweep();
+          const retry = await this.runSweep(output);
           if (retry.delay.confidence > sweep.delay.confidence) sweep = retry;
         }
         const { ref, mic, delay, ir, freqs, magDb } = sweep;
@@ -151,13 +160,70 @@ export class TuneSession {
     }
   }
 
-  /** Play/capture one sweep and run the delay + IR + magnitude pipeline. */
-  async runSweep() {
-    const { ref, mic } = await this.audio.playAndCapture(this.sweep, this.captureSeconds);
+  /**
+   * Play/capture one sweep and run the delay + IR + magnitude pipeline.
+   * Applies the output's sweepTrimDb (e.g. subs run quieter than mains) —
+   * extractIR peak-normalizes the recovered IR, so the trim does not skew
+   * the magnitude/delay results, only the captured levelDbfs and headroom.
+   */
+  async runSweep(output) {
+    const sweep = scaleBuffer(this.sweep, output?.sweepTrimDb);
+    const { ref, mic } = await this.audio.playAndCapture(sweep, this.captureSeconds);
     const delay = findDelay(ref, mic, this.cfg.audio.sampleRate);
     const ir = extractIR(mic, this.inverse, this.cfg.audio.sampleRate);
     const { freqs, magDb } = magnitudeResponse(ir, this.cfg.audio.sampleRate);
     return { ref, mic, delay, ir, freqs, magDb };
+  }
+
+  /**
+   * Pre-flight: play a short blip on each enabled output and confirm signal
+   * returns before committing to a full guided session. Does not touch
+   * this.results — purely a go/no-go check, reported per output on the UI.
+   */
+  async preflightCheck() {
+    if (!['idle', 'done', 'review'].includes(this.state)) {
+      throw new Error('cannot pre-flight while a session is running');
+    }
+    const pf = this.cfg.audio.preflight || {};
+    const minPeak = pf.minPeakDbfs ?? -50;
+    const minSnr = pf.minSnrDb ?? 12;
+    const probePos = this.room.positions.find((p) => p.id === this.room.verifyPosition)
+      || this.room.positions[0] || { x: 0, y: 0, z: 1.2 };
+
+    this.state = 'preflight';
+    this.preflightResults = [];
+    this.emit('session', this.snapshot());
+
+    try {
+      for (const output of this.cfg.outputs.filter((o) => o.enabled !== false)) {
+        this.emit('preflight_progress', { outputId: output.id, label: output.label, status: 'testing' });
+        if (this.audio.setScenario) this.audio.setScenario(output.id, probePos, output.sources);
+        await this.wing.soloOutput(output.id, this.cfg.outputs);
+        await pause(300);
+
+        const blip = scaleBuffer(this.blip, output.sweepTrimDb);
+        const { mic } = await this.audio.playAndCapture(blip, this.blipCaptureSeconds);
+        const peak = Math.round(peakDbfs(mic) * 10) / 10;
+        const snrDb = estimateSnrDb(mic, this.cfg.audio.sampleRate);
+        const pass = peak >= minPeak && snrDb >= minSnr;
+
+        const result = { outputId: output.id, label: output.label, pass, peakDbfs: peak, snrDb, status: pass ? 'pass' : 'fail' };
+        this.preflightResults.push(result);
+        this.emit('preflight_progress', result);
+      }
+      await this.wing.unmuteAll(this.cfg.outputs);
+    } finally {
+      this.state = 'idle';
+      this.emit('session', this.snapshot());
+      const failed = this.preflightResults.filter((r) => !r.pass);
+      if (failed.length) {
+        this.emit('warning', {
+          message: `Pre-flight: ${failed.map((f) => f.label).join(', ')} returned no usable signal — check routing/amp/patch before starting a full tune.`
+        });
+      } else if (this.preflightResults.length) {
+        this.emit('info', { message: `Pre-flight OK — all ${this.preflightResults.length} outputs returned signal.` });
+      }
+    }
   }
 
   /** Retake the previous position. */

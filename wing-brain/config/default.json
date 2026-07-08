@@ -21,6 +21,13 @@
       "seconds": 6,
       "padSeconds": 2,
       "levelDbfs": -18
+    },
+    "preflight": {
+      "blipFreq": 1000,
+      "blipSeconds": 1,
+      "captureSeconds": 1.4,
+      "minPeakDbfs": -50,
+      "minSnrDb": 12
     }
   },
   "outputs": [
@@ -76,7 +83,8 @@
       ],
       "sources": [
         "sub"
-      ]
+      ],
+      "sweepTrimDb": -6
     },
     {
       "id": "fill_sides",

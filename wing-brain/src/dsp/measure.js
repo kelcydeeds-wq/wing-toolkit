@@ -47,6 +47,34 @@ export function makeESS({ f1 = 20, f2 = 20000, seconds = 6, sampleRate = 48000, 
   return { sweep, inverse };
 }
 
+/**
+ * Short windowed tone burst for a pre-flight "is this output alive" check.
+ * Deliberately simple (not a sweep) — this only needs to prove signal makes
+ * it out the speaker and back into the mic, not measure a transfer function.
+ */
+export function makeBlip({ freq = 1000, seconds = 1, sampleRate = 48000, levelDbfs = -18 } = {}) {
+  const N = Math.floor(seconds * sampleRate);
+  const blip = new Float64Array(N);
+  const amp = Math.pow(10, levelDbfs / 20);
+  for (let i = 0; i < N; i++) blip[i] = amp * Math.sin((2 * Math.PI * freq * i) / sampleRate);
+  const fade = Math.floor(0.01 * sampleRate);
+  for (let i = 0; i < fade && i < N; i++) {
+    const g = 0.5 - 0.5 * Math.cos((Math.PI * i) / fade);
+    blip[i] *= g;
+    blip[N - 1 - i] *= g;
+  }
+  return blip;
+}
+
+/** Return a level-scaled copy of a signal buffer, `trimDb` relative gain (0 = unchanged). */
+export function scaleBuffer(x, trimDb) {
+  if (!trimDb) return x;
+  const gain = Math.pow(10, trimDb / 20);
+  const out = new Float64Array(x.length);
+  for (let i = 0; i < x.length; i++) out[i] = x[i] * gain;
+  return out;
+}
+
 /** FFT-based linear convolution. */
 export function fftConvolve(a, b) {
   const outLen = a.length + b.length - 1;
