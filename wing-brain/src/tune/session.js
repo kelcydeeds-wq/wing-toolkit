@@ -18,13 +18,46 @@ import { buildAnalysisPayload, claudeTune, validate } from './advisor.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
-const BASELINE_PATH = path.resolve('data/baseline.json');
+const DEFAULT_DATA_DIR = 'data';
+const MAX_SESSION_HISTORY = 5;
 const LOW_CONFIDENCE_THRESHOLD = 3;
 const LOW_SNR_THRESHOLD_DB = 15;
 
+/** List saved session records, newest first. At most MAX_SESSION_HISTORY
+ *  files ever exist, so reading each one fully for its metadata is cheap.
+ *  `dataDir` defaults to the app's real data dir; tests pass a temp dir so
+ *  they never touch the operator's actual session history on disk. */
+export function listSessionHistory(dataDir = DEFAULT_DATA_DIR) {
+  const dir = path.resolve(dataDir, 'sessions');
+  if (!fs.existsSync(dir)) return [];
+  return fs.readdirSync(dir)
+    .filter((f) => f.endsWith('.json'))
+    .sort().reverse()
+    .map((f) => {
+      const rec = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
+      return {
+        id: rec.id, mode: rec.mode, room: rec.room,
+        startedAt: rec.startedAt, finishedAt: rec.finishedAt,
+        source: rec.recommendations?.source ?? null,
+        applied: rec.recommendations?.applied ?? false
+      };
+    });
+}
+
+/** Delete session record files beyond the newest MAX_SESSION_HISTORY. */
+function pruneSessionHistory(sessionsDir) {
+  if (!fs.existsSync(sessionsDir)) return;
+  const files = fs.readdirSync(sessionsDir).filter((f) => f.endsWith('.json')).sort();
+  const excess = files.length - MAX_SESSION_HISTORY;
+  for (let i = 0; i < excess; i++) fs.unlinkSync(path.join(sessionsDir, files[i]));
+}
+
 export class TuneSession {
-  constructor({ config, room, audio, wing, emit }) {
+  constructor({ config, room, audio, wing, emit, dataDir = DEFAULT_DATA_DIR }) {
     this.cfg = config;
+    this.dataDir = dataDir;
+    this.baselinePath = path.resolve(dataDir, 'baseline.json');
+    this.sessionsDir = path.resolve(dataDir, 'sessions');
     this.room = room;
     this.audio = audio;
     this.wing = wing;
@@ -62,7 +95,8 @@ export class TuneSession {
       posIndex: this.posIndex,
       results: this.results.map(({ freqs, magDb, ...meta }) => meta), // meters only, traces sent separately
       recommendations: this.recommendations,
-      preflightResults: this.preflightResults
+      preflightResults: this.preflightResults,
+      currentRecordId: this.currentRecordId ?? null
     };
   }
 
@@ -73,6 +107,8 @@ export class TuneSession {
     this.mode = mode;
     this.results = [];
     this.recommendations = null;
+    this.currentRecordId = null;
+    this.startedAt = new Date().toISOString();
     this.positions = mode === 'verify'
       ? this.room.positions.filter((p) => p.id === this.room.verifyPosition)
       : [...this.room.positions];
@@ -238,6 +274,7 @@ export class TuneSession {
   async finish() {
     if (this.mode === 'verify') {
       this.recommendations = this.buildVerifyReport();
+      this.saveSessionRecord();
       this.state = 'done';
       this.emit('session', this.snapshot());
       return;
@@ -273,6 +310,7 @@ export class TuneSession {
     }
 
     this.recommendations = localRec;
+    this.saveSessionRecord();
     this.state = 'review';
     this.emit('session', this.snapshot());
   }
@@ -314,7 +352,14 @@ export class TuneSession {
         filters,
         avg: Array.from(avg), varDb: Array.from(varDb),
         target: Array.from(target), freqs: grid,
-        polarityIssue: rs.some((r) => r.polarity < 0)
+        polarityIssue: rs.some((r) => r.polarity < 0),
+        // Per-position curves for the review screen's "show all positions"
+        // overlay toggle — same freqs grid as avg/target above.
+        positions: rs.map((r) => ({
+          positionId: r.positionId,
+          label: this.positions.find((p) => p.id === r.positionId)?.label ?? r.positionId,
+          magDb: r.magDb
+        }))
       };
     }
 
@@ -355,8 +400,8 @@ export class TuneSession {
   }
 
   buildVerifyReport() {
-    const baseline = fs.existsSync(BASELINE_PATH)
-      ? JSON.parse(fs.readFileSync(BASELINE_PATH, 'utf8'))
+    const baseline = fs.existsSync(this.baselinePath)
+      ? JSON.parse(fs.readFileSync(this.baselinePath, 'utf8'))
       : null;
     const report = { outputs: [], baselineFound: !!baseline };
     for (const output of this.cfg.outputs) {
@@ -384,10 +429,43 @@ export class TuneSession {
     return report;
   }
 
+  /** Full downloadable record of this session — everything measured + recommended. */
+  buildSessionRecord(id) {
+    return {
+      id: id ?? this.currentRecordId ?? makeSessionId(this.mode),
+      mode: this.mode,
+      room: this.room.name,
+      startedAt: this.startedAt ?? new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+      positions: this.positions.map(({ id, label, zone, weight }) => ({ id, label, zone, weight })),
+      results: this.results,
+      recommendations: this.recommendations
+    };
+  }
+
+  /** Persist a new session record, prune history to the last N, notify clients. */
+  saveSessionRecord() {
+    const rec = this.buildSessionRecord();
+    this.currentRecordId = rec.id;
+    fs.mkdirSync(this.sessionsDir, { recursive: true });
+    fs.writeFileSync(path.join(this.sessionsDir, `${rec.id}.json`), JSON.stringify(rec, null, 2));
+    pruneSessionHistory(this.sessionsDir);
+    this.emit('sessionHistory', listSessionHistory(this.dataDir));
+    return rec.id;
+  }
+
+  /** Rewrite the current session's record in place (e.g. after Apply). */
+  overwriteSessionRecord() {
+    if (!this.currentRecordId) return;
+    const rec = this.buildSessionRecord(this.currentRecordId);
+    fs.writeFileSync(path.join(this.sessionsDir, `${this.currentRecordId}.json`), JSON.stringify(rec, null, 2));
+    this.emit('sessionHistory', listSessionHistory(this.dataDir));
+  }
+
   /** Save current verify results as the new baseline. */
   saveBaseline() {
-    fs.mkdirSync(path.dirname(BASELINE_PATH), { recursive: true });
-    fs.writeFileSync(BASELINE_PATH, JSON.stringify(this.buildVerifyReport(), null, 2));
+    fs.mkdirSync(path.dirname(this.baselinePath), { recursive: true });
+    fs.writeFileSync(this.baselinePath, JSON.stringify(this.buildVerifyReport(), null, 2));
     this.emit('info', { message: 'Baseline saved.' });
   }
 
@@ -401,9 +479,15 @@ export class TuneSession {
       await this.wing.applyTuning(output, rec.filters, delay?.addDelayMs ?? 0);
     }
     this.recommendations.applied = true;
+    this.overwriteSessionRecord();
     this.state = 'done';
     this.emit('session', this.snapshot());
   }
 }
 
 const pause = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function makeSessionId(mode) {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  return `${stamp}__${mode || 'session'}`;
+}

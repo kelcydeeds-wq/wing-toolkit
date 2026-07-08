@@ -33,10 +33,10 @@
   .card h2{font-size:12px; letter-spacing:.14em; text-transform:uppercase; color:var(--dim);
     margin:0 0 10px; font-weight:600}
 
-  button{font:inherit; border:0; border-radius:var(--radius); cursor:pointer;
+  button,a.secondary{font:inherit; border:0; border-radius:var(--radius); cursor:pointer;
     color:var(--bg); background:var(--ink); padding:14px 18px; width:100%;
     font-weight:700; letter-spacing:.06em}
-  button.secondary{background:var(--panel2); color:var(--ink); border:1px solid var(--line)}
+  button.secondary,a.secondary{background:var(--panel2); color:var(--ink); border:1px solid var(--line)}
   button.big{font-size:22px; padding:22px; border-radius:18px}
   button.amber{background:var(--amber)}
   button.green{background:var(--green)}
@@ -100,6 +100,10 @@
       <h2>Last pre-flight</h2>
       <ul class="poslist" id="preflightSummary"></ul>
     </div>
+    <div class="card hidden" id="historyCard">
+      <h2>Recent sessions</h2>
+      <ul class="poslist" id="historyList"></ul>
+    </div>
   </section>
 
   <!-- PREFLIGHT -->
@@ -140,7 +144,7 @@ const ws = new WebSocket(`ws://${location.host}`);
 const send = (m) => ws.readyState === 1 && ws.send(JSON.stringify(m));
 const $ = (id) => document.getElementById(id);
 
-let room = null, session = null, lastTrace = null;
+let room = null, session = null, lastTrace = null, history = [];
 
 ws.onmessage = (e) => {
   const { event, payload } = JSON.parse(e.data);
@@ -155,6 +159,7 @@ ws.onmessage = (e) => {
       ${payload.clipped?'<span class="warn">CLIPPED</span>':''}`; }
   if (event === 'measuring') setStatus(`Sweeping ${payload.output} @ ${payload.position}…`);
   if (event === 'preflight_progress') renderPreflightLive(payload);
+  if (event === 'sessionHistory') { history = payload; renderHistory(); }
   if (event === 'warning') setStatus(payload.message, 'warn');
   if (event === 'error') setStatus(payload.message, 'warn');
   if (event === 'info') setStatus(payload.message, 'ok');
@@ -190,6 +195,23 @@ function renderPreflightSummary(){
   $('preflightSummary').innerHTML = results.map(preflightRow).join('');
 }
 
+function fmtWhen(iso){
+  if (!iso) return '';
+  const d = new Date(iso);
+  return isNaN(d) ? iso : d.toLocaleString([], {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'});
+}
+
+function renderHistory(){
+  const card = $('historyCard');
+  if (!history.length) { card.classList.add('hidden'); return; }
+  card.classList.remove('hidden');
+  $('historyList').innerHTML = history.map((h) => {
+    const tag = h.mode === 'full' ? (h.applied ? 'applied' : (h.source || 'full')) : 'verify';
+    return `<li><span>${fmtWhen(h.finishedAt)} · ${tag}</span>
+      <a href="/api/sessions/${h.id}" download="${h.id}.json" style="color:var(--blue)">Download</a></li>`;
+  }).join('');
+}
+
 function render(){
   $('modeBadge').textContent = (session?.mode || 'idle').toUpperCase();
   $('exitBtn').classList.toggle('hidden', !session || session.state === 'idle' || session.state === 'preflight');
@@ -221,6 +243,7 @@ function render(){
 
   if (session.state === 'review') { renderReview(); show('reviewView');
     fab.appendChild(mkBtn('APPLY TO CONSOLE','big amber',()=>confirm('Write recommended EQ + delays to the Wing?')&&send({action:'apply'})));
+    if (session.currentRecordId) fab.appendChild(mkLink('Download results (JSON)','secondary',`/api/sessions/${session.currentRecordId}`));
     fab.appendChild(mkBtn('Discard','secondary',()=>send({action:'reset'})));
   }
 
@@ -228,6 +251,7 @@ function render(){
     if (session.mode === 'verify') { renderVerify(); show('verifyView');
       fab.appendChild(mkBtn('Save as new baseline','secondary',()=>send({action:'baseline'})));
     } else { setStatusDone(); }
+    if (session.currentRecordId) fab.appendChild(mkLink('Download results (JSON)','secondary',`/api/sessions/${session.currentRecordId}`));
     fab.appendChild(mkBtn('Home','secondary',()=>send({action:'reset'})));
   }
 }
@@ -284,18 +308,43 @@ function renderReview(){
   // Per-output EQ
   for (const [id, o] of Object.entries(rec.perOutput)) {
     const cid = `trace_${id}`;
+    const hasOverlay = o.positions?.length > 1;
     let frows = o.filters.map(f =>
       `<tr><td>${f.type}</td><td class="num">${f.freq} Hz</td><td class="num">${f.gainDb>0?'+':''}${f.gainDb} dB</td><td class="num">Q ${f.q}</td><td style="color:var(--dim)">${f.reason}</td></tr>`).join('');
     el.insertAdjacentHTML('beforeend', `<div class="card"><h2>${o.label}${o.polarityIssue?' — <span class="warn">check polarity</span>':''}</h2>${o.note?`<p style="color:var(--dim);font-size:13px;margin:0 0 8px">${o.note}</p>`:''}
       <canvas class="trace" id="${cid}" width="560" height="180"></canvas>
-      <div class="legend"><span class="lg-avg"><b>—</b> measured avg</span><span class="lg-target"><b>—</b> target</span><span class="lg-corr"><b>—</b> corrected (est)</span></div>
-      <table><tr><th>Type</th><th style="text-align:right">Freq</th><th style="text-align:right">Gain</th><th style="text-align:right">Q</th><th>Why</th></tr>${frows||'<tr><td colspan="5" style="color:var(--dim)">No correction needed</td></tr>'}</table></div>`);
+      <div class="legend" id="legend_${id}"></div>
+      ${hasOverlay?`<button class="secondary" id="toggle_${id}" style="margin:8px 0 0"></button>`:''}
+      <table style="margin-top:8px"><tr><th>Type</th><th style="text-align:right">Freq</th><th style="text-align:right">Gain</th><th style="text-align:right">Q</th><th>Why</th></tr>${frows||'<tr><td colspan="5" style="color:var(--dim)">No correction needed</td></tr>'}</table></div>`);
+    drawOutputTrace(id, o);
+    if (hasOverlay) {
+      const btn = $(`toggle_${id}`);
+      btn.textContent = overlayMode[id] ? 'Show average' : `Show all ${o.positions.length} positions`;
+      btn.onclick = () => { overlayMode[id] = !overlayMode[id]; drawOutputTrace(id, o); btn.textContent = overlayMode[id] ? 'Show average' : `Show all ${o.positions.length} positions`; };
+    }
+  }
+}
+
+const overlayMode = {}; // outputId -> true shows all per-position curves instead of the average
+const OVERLAY_PALETTE = ['#ffb454','#5dd39e','#6ab7ff','#ff6b5e','#c792ea','#f2c94c','#56ccf2','#bb86fc'];
+
+function drawOutputTrace(id, o){
+  const cv = $(`trace_${id}`), legend = $(`legend_${id}`);
+  if (overlayMode[id] && o.positions?.length) {
+    const series = o.positions.map((p, i) => ({ freqs:o.freqs, magDb:p.magDb, color: OVERLAY_PALETTE[i % OVERLAY_PALETTE.length] }));
+    series.push({ freqs:o.freqs, magDb:o.target, color:'#8b919a', dash:true });
+    drawTrace(cv, series);
+    legend.innerHTML = o.positions.map((p, i) =>
+      `<span style="color:${OVERLAY_PALETTE[i % OVERLAY_PALETTE.length]}"><b>—</b> ${p.label}</span>`).join('')
+      + '<span class="lg-target"><b>—</b> target</span>';
+  } else {
     const corrected = estimateCorrected(o);
-    drawTrace($(cid), [
+    drawTrace(cv, [
       { freqs:o.freqs, magDb:o.avg, color:'#6ab7ff' },
       { freqs:o.freqs, magDb:o.target, color:'#8b919a', dash:true },
       { freqs:o.freqs, magDb:corrected, color:'#5dd39e' }
     ]);
+    legend.innerHTML = '<span class="lg-avg"><b>—</b> measured avg</span><span class="lg-target"><b>—</b> target</span><span class="lg-corr"><b>—</b> corrected (est)</span>';
   }
 }
 
@@ -464,6 +513,15 @@ function mkBtn(html, cls, fn){
   const b=document.createElement('button');
   b.className=cls; b.innerHTML=html; if(fn) b.onclick=fn;
   b.style.marginTop='8px'; return b;
+}
+
+/** Anchor styled like a button, for real browser downloads (not a WS action). */
+function mkLink(html, cls, href){
+  const a=document.createElement('a');
+  a.className=cls; a.innerHTML=html; a.href=href; a.download='';
+  a.style.marginTop='8px'; a.style.display='block'; a.style.textAlign='center';
+  a.style.textDecoration='none'; a.style.boxSizing='border-box';
+  return a;
 }
 </script>
 </body>

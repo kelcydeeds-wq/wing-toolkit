@@ -1,13 +1,22 @@
 // Tests for the measurement-loop hardening in src/tune/session.js:
 // auto-retry once on low confidence, clip detection, and per-sweep SNR.
-import { test } from 'node:test';
+import { test, after } from 'node:test';
 import assert from 'node:assert';
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { TuneSession } from '../src/tune/session.js';
 import { makeESS, fftConvolve, peakDbfs } from '../src/dsp/measure.js';
 
 const config = JSON.parse(fs.readFileSync(new URL('../config/default.json', import.meta.url), 'utf8'));
 const room = JSON.parse(fs.readFileSync(new URL('../config/room.json', import.meta.url), 'utf8'));
+
+// finish() persists a session record to disk — point every session in this
+// file at a throwaway temp dir so tests never touch the operator's real
+// data/sessions/ history.
+const TMP_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'wing-brain-test-'));
+after(() => fs.rmSync(TMP_DATA_DIR, { recursive: true, force: true }));
+function newSession(opts) { return new TuneSession({ ...opts, dataDir: TMP_DATA_DIR }); }
 
 const sr = config.audio.sampleRate;
 const { sweep, inverse } = makeESS({ ...config.audio.sweep, sampleRate: sr });
@@ -49,7 +58,7 @@ test('auto-retries once on low confidence, uses the better attempt, and does not
   const audio = { playAndCapture: async () => (call++ === 0 ? noiseCapture() : cleanCapture(20)) };
   const { log, emit } = collectEvents();
   const oneOutputCfg = { ...config, outputs: [config.outputs[0]] };
-  const session = new TuneSession({ config: oneOutputCfg, room, audio, wing: fakeWing(), emit });
+  const session = newSession({ config: oneOutputCfg, room, audio, wing: fakeWing(), emit });
 
   session.start('verify');
   await session.ready();
@@ -67,7 +76,7 @@ test('warns (not silently drops) when confidence is still low after the retry', 
   const audio = { playAndCapture: async () => noiseCapture() }; // always noisy
   const { log, emit } = collectEvents();
   const oneOutputCfg = { ...config, outputs: [config.outputs[0]] };
-  const session = new TuneSession({ config: oneOutputCfg, room, audio, wing: fakeWing(), emit });
+  const session = newSession({ config: oneOutputCfg, room, audio, wing: fakeWing(), emit });
 
   session.start('verify');
   await session.ready();
@@ -81,7 +90,7 @@ test('does not retry when the first sweep is already confident', async () => {
   const audio = { playAndCapture: async () => { call++; return cleanCapture(20); } };
   const { log, emit } = collectEvents();
   const oneOutputCfg = { ...config, outputs: [config.outputs[0]] };
-  const session = new TuneSession({ config: oneOutputCfg, room, audio, wing: fakeWing(), emit });
+  const session = newSession({ config: oneOutputCfg, room, audio, wing: fakeWing(), emit });
 
   session.start('verify');
   await session.ready();
@@ -100,7 +109,7 @@ test('flags a clipped capture and includes clipped:true in the stored result', a
   };
   const { log, emit } = collectEvents();
   const oneOutputCfg = { ...config, outputs: [config.outputs[0]] };
-  const session = new TuneSession({ config: oneOutputCfg, room, audio, wing: fakeWing(), emit });
+  const session = newSession({ config: oneOutputCfg, room, audio, wing: fakeWing(), emit });
 
   session.start('verify');
   await session.ready();
@@ -113,7 +122,7 @@ test('stores a per-sweep SNR estimate and does not warn on a clean capture', asy
   const audio = { playAndCapture: async () => cleanCapture(20) };
   const { log, emit } = collectEvents();
   const oneOutputCfg = { ...config, outputs: [config.outputs[0]] };
-  const session = new TuneSession({ config: oneOutputCfg, room, audio, wing: fakeWing(), emit });
+  const session = newSession({ config: oneOutputCfg, room, audio, wing: fakeWing(), emit });
 
   session.start('verify');
   await session.ready();
@@ -140,7 +149,7 @@ test('warns on low SNR (quiet capture near the noise floor)', async () => {
   };
   const { log, emit } = collectEvents();
   const oneOutputCfg = { ...config, outputs: [config.outputs[0]] };
-  const session = new TuneSession({ config: oneOutputCfg, room, audio, wing: fakeWing(), emit });
+  const session = newSession({ config: oneOutputCfg, room, audio, wing: fakeWing(), emit });
 
   session.start('verify');
   await session.ready();
@@ -160,7 +169,7 @@ test('runSweep applies a negative output trim so playback level drops, without s
     }
   };
   const oneOutputCfg = { ...config, outputs: [config.outputs[0]] };
-  const session = new TuneSession({ config: oneOutputCfg, room, audio, wing: fakeWing(), emit: () => {} });
+  const session = newSession({ config: oneOutputCfg, room, audio, wing: fakeWing(), emit: () => {} });
 
   await session.runSweep({ ...config.outputs[0], sweepTrimDb: -6 });
   const trimmedPeak = lastSweepPeak;
@@ -194,7 +203,7 @@ test('preflightCheck reports pass for every enabled output when signal returns',
     }
   };
   const { log, emit } = collectEvents();
-  const session = new TuneSession({ config, room, audio, wing: fakeWing(), emit });
+  const session = newSession({ config, room, audio, wing: fakeWing(), emit });
 
   await session.preflightCheck();
 
@@ -223,7 +232,7 @@ test('preflightCheck flags a specific output with no return signal', async () =>
   };
   const twoOutputCfg = { ...config, outputs: [config.outputs[0], { ...config.outputs[2], id: 'dead_sub' }] };
   const { log, emit } = collectEvents();
-  const session = new TuneSession({ config: twoOutputCfg, room, audio: audioStateful, wing, emit });
+  const session = newSession({ config: twoOutputCfg, room, audio: audioStateful, wing, emit });
 
   await session.preflightCheck();
 
@@ -237,7 +246,7 @@ test('preflightCheck flags a specific output with no return signal', async () =>
 test('preflightCheck refuses to run while a session is already in progress', async () => {
   const audio = { playAndCapture: async () => cleanCapture(20) };
   const oneOutputCfg = { ...config, outputs: [config.outputs[0]] };
-  const session = new TuneSession({ config: oneOutputCfg, room, audio, wing: fakeWing(), emit: () => {} });
+  const session = newSession({ config: oneOutputCfg, room, audio, wing: fakeWing(), emit: () => {} });
   session.start('verify'); // state -> waiting_position
   await assert.rejects(() => session.preflightCheck(), /cannot pre-flight while a session is running/);
 });

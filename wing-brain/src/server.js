@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url';
 
 import { makeAudioIO } from './audio/io.js';
 import { makeWing } from './wing/client.js';
-import { TuneSession } from './tune/session.js';
+import { TuneSession, listSessionHistory } from './tune/session.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
@@ -37,6 +37,20 @@ app.get('/analysis.json', (_req, res) => {
   res.json(session.lastAnalysisPayload);
 });
 
+// Session history — last N full/verify sessions (see data/sessions/), for the
+// phone UI's history list and the review screen's download-results button.
+app.get('/api/sessions', (_req, res) => {
+  res.json(listSessionHistory());
+});
+
+const SESSION_ID_RE = /^[0-9A-Za-z_-]+$/; // our own generated ids only — blocks path traversal
+app.get('/api/sessions/:id', (req, res) => {
+  if (!SESSION_ID_RE.test(req.params.id)) return res.status(400).json({ error: 'invalid session id' });
+  const file = path.join(root, 'data/sessions', `${req.params.id}.json`);
+  if (!fs.existsSync(file)) return res.status(404).json({ error: 'not found' });
+  res.download(file, `${req.params.id}.json`);
+});
+
 const server = http.createServer(app);
 const wss = new WebSocketServer({ server });
 
@@ -52,6 +66,7 @@ const session = new TuneSession({ config, room, audio, wing, emit: broadcast });
 wss.on('connection', (ws) => {
   ws.send(JSON.stringify({ event: 'session', payload: session.snapshot() }));
   ws.send(JSON.stringify({ event: 'room', payload: room }));
+  ws.send(JSON.stringify({ event: 'sessionHistory', payload: listSessionHistory() }));
 
   ws.on('message', async (raw) => {
     let msg;
