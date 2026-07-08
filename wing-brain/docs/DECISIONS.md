@@ -118,6 +118,19 @@ reviewed and reversed if wrong.
   the source untouched is the more conservative reading, and duplicating a
   live mic onto two channels for one session isn't catastrophic. `--clear-source`
   is there for whoever wants the tidy version once they trust the plan.
+- **Recorder subscribes to `/.*/`** (every address, via `LiveOscTransport`'s
+  raw-RegExp subscribe path) rather than a fixed address list — the whole
+  point of a traffic recorder is capturing addresses nobody predicted, which
+  is exactly the gap dump-wing-state's best-guess schema can't fill.
+- **`replayRecording` lives in `src/wing/osc.js`, not the recorder script.**
+  It's a capability of the mock transport (feed it recorded traffic instead
+  of synthetic sends), not something specific to the CLI — other tools or
+  tests can import and reuse it directly. `record-osc.mjs` owns the file
+  format (`{t, address, args}` JSONL, `t` = ms offset from recording start)
+  and exposes replay as a `--replay` CLI convenience on top.
+- **`recordFromTransport` takes an `AbortSignal`** instead of hardcoding
+  `process.once('SIGINT', ...)`, so tests can stop a recording deterministically
+  (`controller.abort()`) instead of needing to simulate a real SIGINT.
 - **Verify uses tolerant float comparison** (same `< 1e-3` reasoning as the
   OSC transport tests) — an exact-equality readback check would spuriously
   abort a real remap over float32 rounding on the console's reply, not an

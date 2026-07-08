@@ -138,3 +138,28 @@ class MockOscTransport {
 
   close() {}
 }
+
+/* ------------------------------ REPLAY ---------------------------------- */
+
+/**
+ * Replay a recorded OSC session (see scripts/record-osc.mjs) against a
+ * transport — normally the mock, so development/testing can be driven by
+ * real captured traffic without a live console. `records` is an array of
+ * `{t, address, args}` (t = ms offset from the start of the recording, as
+ * written by the recorder). Messages are re-sent in order, spaced out at
+ * their original relative timing (scaled by `speedMultiplier`) so downstream
+ * consumers see roughly the same pacing as the live session.
+ */
+export async function replayRecording(transport, records, { speedMultiplier = 1, onEvent } = {}) {
+  let prevT = 0;
+  for (let i = 0; i < records.length; i++) {
+    const rec = records[i];
+    const gap = Math.max(0, (rec.t - prevT) / Math.max(speedMultiplier, 0.001));
+    if (gap > 0) await sleep(gap);
+    prevT = rec.t;
+    transport.send(rec.address, rec.args);
+    if (onEvent) onEvent(rec, i, records.length);
+  }
+}
+
+function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
