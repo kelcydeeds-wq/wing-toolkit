@@ -1,0 +1,116 @@
+{
+  "mode": "mock",
+  "server": {
+    "port": 3000
+  },
+  "wing": {
+    "host": "192.168.1.50",
+    "port": 2223,
+    "oscillatorChannel": 39
+  },
+  "audio": {
+    "sampleRate": 48000,
+    "inputDevice": "SoundGrid",
+    "outputDevice": "SoundGrid",
+    "referenceInputChannel": 1,
+    "micInputChannel": 2,
+    "sweep": {
+      "type": "ess",
+      "f1": 20,
+      "f2": 20000,
+      "seconds": 6,
+      "padSeconds": 2,
+      "levelDbfs": -18
+    }
+  },
+  "outputs": [
+    {
+      "id": "main_l",
+      "label": "Main L",
+      "wingOutput": 1,
+      "band": [
+        40,
+        16000
+      ]
+    },
+    {
+      "id": "main_r",
+      "label": "Main R",
+      "wingOutput": 2,
+      "band": [
+        40,
+        16000
+      ]
+    },
+    {
+      "id": "sub",
+      "label": "Subs",
+      "wingOutput": 3,
+      "band": [
+        25,
+        120
+      ]
+    }
+  ],
+  "guardrails": {
+    "eqAutoMaxHz": 300,
+    "maxCutDb": 6,
+    "maxBoostDb": 3,
+    "maxFiltersPerOutput": 8,
+    "minQ": 0.7,
+    "maxQ": 8,
+    "nullVarianceDb": 8,
+    "tiltOnlyAboveHz": 300,
+    "requireApplyTap": true,
+    "minFilterHz": 40,
+    "noBoostBelowHz": 100,
+    "maxBoostQ": 2,
+    "minFilterSpacingOct": 0.33
+  },
+  "targetCurve": {
+    "name": "worship_v1",
+    "comment": "Smooth downward tilt, warm low-mids, controlled presence. Points are Hz:dB relative anchors, interpolated log-frequency.",
+    "points": [
+      [
+        31.5,
+        6.0
+      ],
+      [
+        63,
+        5.0
+      ],
+      [
+        125,
+        3.0
+      ],
+      [
+        250,
+        1.5
+      ],
+      [
+        500,
+        0.5
+      ],
+      [
+        1000,
+        0.0
+      ],
+      [
+        2000,
+        -1.0
+      ],
+      [
+        4000,
+        -2.5
+      ],
+      [
+        8000,
+        -4.5
+      ],
+      [
+        16000,
+        -7.0
+      ]
+    ]
+  }
+}

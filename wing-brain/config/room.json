@@ -1,0 +1,15 @@
+{
+  "name": "PLACEHOLDER — replace after building-sketch session",
+  "comment": "Coordinates are meters, origin at stage-left front corner, x across stage, y toward back of room. Weights bias the spatial average toward where people actually sit.",
+  "width": 18,
+  "depth": 24,
+  "stageDepth": 5,
+  "positions": [
+    { "id": "p1", "label": "Front center",  "x": 9,  "y": 9,  "weight": 1.0 },
+    { "id": "p2", "label": "Mid left",      "x": 4.5,"y": 13, "weight": 1.0 },
+    { "id": "p3", "label": "Mid right",     "x": 13.5,"y": 13,"weight": 1.0 },
+    { "id": "p4", "label": "FOH",           "x": 9,  "y": 17, "weight": 1.5 },
+    { "id": "p5", "label": "Back corner",   "x": 3,  "y": 21, "weight": 0.5 }
+  ],
+  "verifyPosition": "p4"
+}

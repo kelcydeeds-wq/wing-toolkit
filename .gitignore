@@ -1,0 +1,6 @@
+node_modules/
+wing-brain/data/*
+!wing-brain/data/.gitkeep
+*.log
+.DS_Store
+Thumbs.db

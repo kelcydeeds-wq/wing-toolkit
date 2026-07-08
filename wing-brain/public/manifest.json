@@ -1,0 +1,9 @@
+{
+  "name": "System Tune",
+  "short_name": "Tune",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0c0e10",
+  "theme_color": "#0c0e10",
+  "icons": []
+}
