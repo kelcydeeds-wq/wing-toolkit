@@ -1,14 +1,18 @@
-// client.js — Wing console interface (live OSC + mock).
+// client.js — Wing console interface for the System Tune feature (live + mock).
 //
 // The tune module needs very little from the console: route the measurement
 // signal to one output at a time, read back current output EQ/delay, and —
 // only after an explicit Apply tap — write recommended EQ/delay to outputs.
+// The actual OSC connection (send/get/subscribe) lives in wing/osc.js — a
+// generic transport with no tune-specific knowledge, shared with the audit
+// scripts (dump-wing-state, apply-remap, the traffic recorder). This module
+// is just a thin, tune-shaped API on top of it.
 //
 // >>> LIVE OSC ADDRESSES ARE STUBBED. The Wing's output-section addresses will
 //     be confirmed from the state dump at the audit session; the mock console
 //     implements the same interface so everything upstream is testable now. <<<
 
-import osc from 'osc';
+import { makeOscTransport } from './osc.js';
 
 export function makeWing(config) {
   return config.mode === 'mock' ? new MockWing(config) : new LiveWing(config);
@@ -18,15 +22,8 @@ export function makeWing(config) {
 
 class LiveWing {
   constructor(config) {
-    this.cfg = config.wing;
-    this.port = new osc.UDPPort({
-      localAddress: '0.0.0.0',
-      localPort: 0,
-      remoteAddress: this.cfg.host,
-      remotePort: this.cfg.port
-    });
-    this.ready = new Promise((res) => this.port.on('ready', res));
-    this.port.open();
+    this.osc = makeOscTransport(config);
+    this.ready = this.osc.ready;
   }
 
   /** OSC path prefix for an output's Wing target (main bus vs matrix).
@@ -41,7 +38,7 @@ class LiveWing {
     await this.ready;
     for (const out of outputs) {
       if (out.enabled === false) continue;
-      this.send(`${this.path(out)}/mute`, out.id === outputId ? 0 : 1);
+      this.osc.send(`${this.path(out)}/mute`, [out.id === outputId ? 0 : 1]);
     }
   }
 
@@ -49,7 +46,7 @@ class LiveWing {
     await this.ready;
     for (const out of outputs) {
       if (out.enabled === false) continue;
-      this.send(`${this.path(out)}/mute`, 0);
+      this.osc.send(`${this.path(out)}/mute`, [0]);
     }
   }
 
@@ -57,22 +54,18 @@ class LiveWing {
   async applyTuning(output, filters, addDelayMs) {
     await this.ready;
     // TODO(church): confirm EQ + delay OSC address scheme and value scaling
-    this.send(`${this.path(output)}/delay`, addDelayMs);
+    this.osc.send(`${this.path(output)}/delay`, [addDelayMs]);
     filters.forEach((f, i) => {
       const base = `${this.path(output)}/eq/${i + 1}`;
-      this.send(`${base}/type`, f.type === 'hshelf' ? 'shv' : 'peq');
-      this.send(`${base}/f`, f.freq);
-      this.send(`${base}/g`, f.gainDb);
-      this.send(`${base}/q`, f.q);
-      this.send(`${base}/on`, 1);
+      this.osc.send(`${base}/type`, [f.type === 'hshelf' ? 'shv' : 'peq']);
+      this.osc.send(`${base}/f`, [f.freq]);
+      this.osc.send(`${base}/g`, [f.gainDb]);
+      this.osc.send(`${base}/q`, [f.q]);
+      this.osc.send(`${base}/on`, [1]);
     });
   }
 
-  send(address, value) {
-    this.port.send({ address, args: [{ type: typeof value === 'number' ? 'f' : 's', value }] });
-  }
-
-  close() { this.port.close(); }
+  close() { this.osc.close(); }
 }
 
 /* ------------------------------- MOCK ---------------------------------- */

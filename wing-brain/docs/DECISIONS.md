@@ -49,3 +49,25 @@ reviewed and reversed if wrong.
   first mock walkthrough so it doesn't read as broken.
 - **Guardrail limits untouched** per run rules; guardrail *code* gained tests
   only.
+- **OSC layer extracted to `src/wing/osc.js`**: a generic transport
+  (`send`/`get`/`subscribe`, live UDP + in-memory mock) with no tune-specific
+  knowledge, shared by `wing/client.js` (System Tune) and, from here on, the
+  audit scripts (dump/plan-remap/apply-remap/recorder). `get()` always
+  resolves — `null` on timeout, never throws or hangs — so callers can await
+  a query in a loop without a try/catch per address. `wing/client.js` keeps
+  the tune-shaped API (`soloOutput`/`unmuteAll`/`applyTuning`) unchanged;
+  `LiveWing` just composes the shared transport instead of owning its own
+  `osc.UDPPort`. One incidental wire-format change: OSC integer args (e.g.
+  mute 0/1) now tag as OSC type `i` instead of always `f` — more correct, and
+  nothing currently depends on the old tagging since no test or hardware run
+  ever exercised `LiveWing` before this refactor.
+- **`npm test` runs with `--test-force-exit`.** A UDP-backed test whose
+  assertion throws before it calls `.close()` leaves a dgram socket open,
+  and Node's test runner will not exit while any handle is open — the whole
+  suite hangs forever instead of reporting the failure. Every OSC test now
+  wraps its body in try/finally so sockets close either way, but
+  `--test-force-exit` is kept as a backstop for the next person who forgets.
+- OSC float args are 32-bit (`f` type) — a value like 1.4 round-trips with
+  float32 rounding error (`1.399999976158142`). Tests compare OSC-transported
+  numbers with a small tolerance, not `===`; production code was already
+  tolerant of this since guardrail clamping rounds to 1 decimal place anyway.
