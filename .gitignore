@@ -1,5 +1,6 @@
 node_modules/
 .env
+.claude/
 wing-brain/data/*
 !wing-brain/data/.gitkeep
 *.log
