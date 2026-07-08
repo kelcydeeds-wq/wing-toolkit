@@ -141,20 +141,71 @@ export function recommendEQ({ freqs, avg, varDb, target, guardrails, band = [40,
  * every other output gets delayed so arrivals match at the weighted listening area.
  * delays: { outputId: msAtEachPosition[] } — we align on the primary position set.
  */
-export function recommendDelays(perOutputDelaysMs, referenceOutputId) {
-  const avg = {};
-  for (const [id, arr] of Object.entries(perOutputDelaysMs)) {
-    avg[id] = arr.reduce((a, b) => a + b, 0) / arr.length;
-  }
-  const refMs = avg[referenceOutputId];
-  // Latest arrival defines zero-added-delay; everyone else waits for it.
-  const latest = Math.max(...Object.values(avg));
+export function recommendDelays({ results, outputs, guardrails }) {
+  // Two rules:
+  //  MAINS/SUBS: align arrivals to each other at the weighted main-floor positions
+  //   (latest arrival defines zero; everyone else waits for it).
+  //  FILLS: each fill is delayed so that, at ITS coverage positions, its arrival
+  //   lands fillPrecedenceMs AFTER the first main arrival — mains stay sonically
+  //   first (precedence effect), fill adds clarity without pulling the image.
+  const enabled = outputs.filter((o) => o.enabled !== false);
+  const at = (outId, posId) =>
+    results.find((r) => r.outputId === outId && r.positionId === posId)?.delayMs;
+
   const rec = {};
-  for (const [id, ms] of Object.entries(avg)) {
-    rec[id] = { measuredMs: round1(ms), addDelayMs: round1(latest - ms) };
+
+  // --- main system ---
+  const mainsSubs = enabled.filter((o) => o.role === 'main' || o.role === 'sub');
+  const mainPositions = [...new Set(results
+    .filter((r) => r.positionWeight > 0).map((r) => r.positionId))];
+  const avgArrival = {};
+  for (const o of mainsSubs) {
+    const vals = mainPositions.map((p) => at(o.id, p)).filter((v) => v !== undefined);
+    if (vals.length) avgArrival[o.id] = vals.reduce((a, b) => a + b, 0) / vals.length;
   }
-  rec._reference = referenceOutputId;
-  rec._note = refMs !== undefined ? 'aligned to latest arrival' : 'reference missing';
+  const latest = Math.max(...Object.values(avgArrival), 0);
+  for (const o of mainsSubs) {
+    if (avgArrival[o.id] === undefined) continue;
+    rec[o.id] = {
+      measuredMs: round1(avgArrival[o.id]),
+      addDelayMs: round1(latest - avgArrival[o.id]),
+      rule: 'main-system alignment'
+    };
+  }
+
+  // --- fills ---
+  const mains = enabled.filter((o) => o.role === 'main').map((o) => o.id);
+  const prec = guardrails?.fillPrecedenceMs ?? 2;
+  for (const o of enabled.filter((x) => x.role === 'fill')) {
+    const posIds = o.alignPositions || mainPositions;
+    const diffs = [];
+    const perPos = {};
+    for (const p of posIds) {
+      const fillArr = at(o.id, p);
+      const mainArrs = mains.map((m) => at(m, p)).filter((v) => v !== undefined)
+        // main arrival as heard AFTER main-system delays are applied
+        .map((v, i) => v + (rec[mains[i]]?.addDelayMs ?? 0));
+      if (fillArr === undefined || !mainArrs.length) continue;
+      const firstMain = Math.min(...mainArrs);
+      const d = firstMain - fillArr + prec;
+      diffs.push(d);
+      perPos[p] = round1(d);
+    }
+    if (!diffs.length) continue;
+    const avg = diffs.reduce((a, b) => a + b, 0) / diffs.length;
+    const spread = Math.max(...diffs) - Math.min(...diffs);
+    rec[o.id] = {
+      addDelayMs: round1(Math.max(0, avg)),
+      rule: `fill: main-first +${prec} ms at ${posIds.join(',')}`,
+      perPositionMs: perPos,
+      spreadMs: round1(spread),
+      spreadNote: spread > 4
+        ? 'coverage positions disagree by >4 ms — shared channel is compromising; check symmetry or consider splitting'
+        : null
+    };
+  }
+
+  rec._note = 'mains aligned to latest arrival; fills main-first with precedence';
   return rec;
 }
 

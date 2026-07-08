@@ -88,9 +88,10 @@ class MockAudioIO {
     this.currentPosition = { x: 9, y: 17 };
   }
 
-  setScenario(outputId, position) {
+  setScenario(outputId, position, sources) {
     this.currentOutput = outputId;
     this.currentPosition = position;
+    this.currentSources = sources || [outputId];
   }
 
   async playAndCapture(sweep, captureSeconds) {
@@ -107,7 +108,18 @@ class MockAudioIO {
     }
 
     // Mic channel: sweep convolved with a synthetic room IR for this output/position
-    const ir = this.roomIR(this.currentOutput, this.currentPosition);
+    // Multi-source outputs (shared-channel fills): both boxes emit, IRs sum
+    let ir = null;
+    for (const src of (this.currentSources || [this.currentOutput])) {
+      const one = this.roomIR(src, this.currentPosition);
+      if (!ir) ir = one;
+      else {
+        const len = Math.max(ir.length, one.length);
+        const sum = new Float64Array(len);
+        sum.set(ir); for (let i = 0; i < one.length; i++) sum[i] += one[i];
+        ir = sum;
+      }
+    }
     const wet = fftConvolve(sweep, ir);
     const mic = new Float64Array(n);
     for (let i = 0; i < Math.min(wet.length, n - interfaceLatency); i++) {

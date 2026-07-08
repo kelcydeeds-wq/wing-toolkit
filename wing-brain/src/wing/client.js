@@ -29,28 +29,37 @@ class LiveWing {
     this.port.open();
   }
 
+  /** OSC path prefix for an output's Wing target (main bus vs matrix).
+   *  TODO(church): confirm both address schemes from the state dump. */
+  path(output) {
+    const t = output.wing || {};
+    return t.type === 'mtx' ? `/mtx/${t.num}` : `/main/${t.num}`;
+  }
+
   /** Route measurement source to exactly one output, others muted. */
   async soloOutput(outputId, outputs) {
     await this.ready;
     for (const out of outputs) {
-      const mute = out.id === outputId ? 0 : 1;
-      // TODO(church): confirm address — likely /out/<n>/mute or matrix routing
-      this.send(`/out/${out.wingOutput}/mute`, mute);
+      if (out.enabled === false) continue;
+      this.send(`${this.path(out)}/mute`, out.id === outputId ? 0 : 1);
     }
   }
 
   async unmuteAll(outputs) {
     await this.ready;
-    for (const out of outputs) this.send(`/out/${out.wingOutput}/mute`, 0);
+    for (const out of outputs) {
+      if (out.enabled === false) continue;
+      this.send(`${this.path(out)}/mute`, 0);
+    }
   }
 
   /** Apply recommended filters + delay to an output. Only called from Apply tap. */
   async applyTuning(output, filters, addDelayMs) {
     await this.ready;
-    // TODO(church): confirm output EQ + delay OSC address scheme and value scaling
-    this.send(`/out/${output.wingOutput}/delay`, addDelayMs);
+    // TODO(church): confirm EQ + delay OSC address scheme and value scaling
+    this.send(`${this.path(output)}/delay`, addDelayMs);
     filters.forEach((f, i) => {
-      const base = `/out/${output.wingOutput}/eq/${i + 1}`;
+      const base = `${this.path(output)}/eq/${i + 1}`;
       this.send(`${base}/type`, f.type === 'hshelf' ? 'shv' : 'peq');
       this.send(`${base}/f`, f.freq);
       this.send(`${base}/g`, f.gainDb);

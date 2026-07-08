@@ -15,7 +15,7 @@
 import { recommendEQ, recommendDelays, spatialAverage, targetOnGrid } from '../dsp/tune.js';
 
 const API_URL = 'https://api.anthropic.com/v1/messages';
-const MODEL = 'claude-opus-4-8';
+const MODEL = 'claude-sonnet-4-6';
 
 /**
  * Build the compact analysis payload Claude reasons over.

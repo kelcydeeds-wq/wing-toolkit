@@ -3,32 +3,199 @@
   "comment": "Geometry extracted from fusion_church_final_Layout.pdf (1/8\"=1'). Origin = stage-front left wall corner. x across the room (m), y from stage front toward rear (m), z up (m). VERIFY on site: tape-measure room width and stage-front-to-rear-wall; if they differ from width/depthMain below, scale everything or re-derive. Speaker z heights are ESTIMATES — measure the actual fly height.",
   "units": "m",
   "width": 18.5,
-  "depthMain": 14.0,
+  "depthMain": 14,
   "stageDepth": 4.7,
   "walls": [
-    [0, -4.7], [3.0, -7.0], [15.5, -7.0], [18.5, -4.7],
-    [18.5, 14.0], [0, 14.0]
+    [
+      0,
+      -4.7
+    ],
+    [
+      3,
+      -7
+    ],
+    [
+      15.5,
+      -7
+    ],
+    [
+      18.5,
+      -4.7
+    ],
+    [
+      18.5,
+      14
+    ],
+    [
+      0,
+      14
+    ]
   ],
-  "stage": { "x": 0, "y": -4.7, "w": 18.5, "h": 4.7 },
-  "balcony": { "x": 4.5, "y": 9.4, "w": 11.7, "h": 4.6, "elevation": 3.0 },
-  "booth": { "x": 8.4, "y": 7.0, "w": 2.4, "h": 1.4 },
+  "stage": {
+    "x": 0,
+    "y": -4.7,
+    "w": 18.5,
+    "h": 4.7
+  },
+  "balcony": {
+    "x": 3.4000000000000004,
+    "y": 9.4,
+    "w": 11.7,
+    "h": 4.6,
+    "elevation": 3
+  },
+  "booth": {
+    "x": 8.05,
+    "y": 7,
+    "w": 2.4,
+    "h": 1.4
+  },
   "speakers": [
-    { "id": "main_l", "x": 5.9,  "y": -0.8, "z": 5.0 },
-    { "id": "main_r", "x": 12.7, "y": -0.8, "z": 5.0 },
-    { "id": "sub",    "x": 9.3,  "y": -0.8, "z": 5.5 },
-    { "id": "fill_l", "x": 1.5,  "y": 0.0,  "z": 1.0 },
-    { "id": "fill_c", "x": 9.6,  "y": 0.0,  "z": 1.0 },
-    { "id": "fill_r", "x": 17.3, "y": 0.0,  "z": 1.0 }
+    {
+      "id": "main_l",
+      "x": 5.9,
+      "y": -0.8,
+      "z": 5
+    },
+    {
+      "id": "main_r",
+      "x": 12.6,
+      "y": -0.8,
+      "z": 5
+    },
+    {
+      "id": "sub",
+      "x": 9.25,
+      "y": -0.8,
+      "z": 5.5
+    },
+    {
+      "id": "fill_l",
+      "x": 1.5,
+      "y": 0,
+      "z": 1
+    },
+    {
+      "id": "fill_c",
+      "x": 9.25,
+      "y": 0,
+      "z": 1
+    },
+    {
+      "id": "fill_r",
+      "x": 17,
+      "y": 0,
+      "z": 1
+    },
+    {
+      "id": "fill_ub_l",
+      "x": 5,
+      "y": 9.4,
+      "z": 2.7,
+      "note": "future, under balcony front edge"
+    },
+    {
+      "id": "fill_ub_c",
+      "x": 9.25,
+      "y": 9.4,
+      "z": 2.7,
+      "note": "future"
+    },
+    {
+      "id": "fill_ub_r",
+      "x": 13.5,
+      "y": 9.4,
+      "z": 2.7,
+      "note": "future"
+    },
+    {
+      "id": "fill_balc_l",
+      "x": 6.5,
+      "y": 10,
+      "z": 5.5,
+      "note": "future, balcony rail area"
+    },
+    {
+      "id": "fill_balc_r",
+      "x": 12,
+      "y": 10,
+      "z": 5.5,
+      "note": "future"
+    }
   ],
   "positions": [
-    { "id": "p1", "label": "Front center",        "zone": "main",          "x": 9.3,  "y": 3.0,  "z": 1.2, "weight": 1.0 },
-    { "id": "p2", "label": "Mid left",            "zone": "main",          "x": 4.5,  "y": 6.0,  "z": 1.2, "weight": 1.0 },
-    { "id": "p3", "label": "Mid right",           "zone": "main",          "x": 14.0, "y": 6.0,  "z": 1.2, "weight": 1.0 },
-    { "id": "p4", "label": "Sound booth (FOH)",   "zone": "main",          "x": 9.6,  "y": 7.7,  "z": 1.2, "weight": 1.5 },
-    { "id": "p5", "label": "Under balcony center","zone": "under_balcony", "x": 9.3,  "y": 11.5, "z": 1.2, "weight": 0.5 },
-    { "id": "p6", "label": "Under balcony left",  "zone": "under_balcony", "x": 5.5,  "y": 12.5, "z": 1.2, "weight": 0.5 },
-    { "id": "p7", "label": "Balcony center",      "zone": "balcony",       "x": 9.3,  "y": 12.0, "z": 4.2, "weight": 0.0 },
-    { "id": "p8", "label": "Balcony right",       "zone": "balcony",       "x": 13.5, "y": 12.5, "z": 4.2, "weight": 0.0 }
+    {
+      "id": "p1",
+      "label": "Front center",
+      "zone": "main",
+      "x": 9.25,
+      "y": 3,
+      "z": 1.2,
+      "weight": 1
+    },
+    {
+      "id": "p2",
+      "label": "Mid left",
+      "zone": "main",
+      "x": 4.5,
+      "y": 6,
+      "z": 1.2,
+      "weight": 1
+    },
+    {
+      "id": "p3",
+      "label": "Mid right",
+      "zone": "main",
+      "x": 14,
+      "y": 6,
+      "z": 1.2,
+      "weight": 1
+    },
+    {
+      "id": "p4",
+      "label": "Sound booth (FOH)",
+      "zone": "main",
+      "x": 9.25,
+      "y": 7.7,
+      "z": 1.2,
+      "weight": 1.5
+    },
+    {
+      "id": "p5",
+      "label": "Under balcony center",
+      "zone": "under_balcony",
+      "x": 9.25,
+      "y": 11.5,
+      "z": 1.2,
+      "weight": 0.5
+    },
+    {
+      "id": "p6",
+      "label": "Under balcony left",
+      "zone": "under_balcony",
+      "x": 5.5,
+      "y": 12.5,
+      "z": 1.2,
+      "weight": 0.5
+    },
+    {
+      "id": "p7",
+      "label": "Balcony center",
+      "zone": "balcony",
+      "x": 9.25,
+      "y": 12.5,
+      "z": 4.2,
+      "weight": 0
+    },
+    {
+      "id": "p8",
+      "label": "Balcony right",
+      "zone": "balcony",
+      "x": 13.5,
+      "y": 12.5,
+      "z": 4.2,
+      "weight": 0
+    }
   ],
   "zoneRules": {
     "comment": "weight 0 zones are measured + reported but excluded from the system EQ average. Main floor drives correction; balcony/under-balcony get truth-telling reports (fill alignment data).",

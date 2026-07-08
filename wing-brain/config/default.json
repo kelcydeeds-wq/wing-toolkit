@@ -27,28 +27,150 @@
     {
       "id": "main_l",
       "label": "Main L",
-      "wingOutput": 1,
+      "role": "main",
+      "enabled": true,
+      "wing": {
+        "type": "main",
+        "num": 1,
+        "TODO": "confirm at audit"
+      },
       "band": [
         40,
         16000
+      ],
+      "sources": [
+        "main_l"
       ]
     },
     {
       "id": "main_r",
       "label": "Main R",
-      "wingOutput": 2,
+      "role": "main",
+      "enabled": true,
+      "wing": {
+        "type": "main",
+        "num": 2,
+        "TODO": "confirm at audit"
+      },
       "band": [
         40,
         16000
+      ],
+      "sources": [
+        "main_r"
       ]
     },
     {
       "id": "sub",
       "label": "Subs",
-      "wingOutput": 3,
+      "role": "sub",
+      "enabled": true,
+      "wing": {
+        "type": "main",
+        "num": 3,
+        "TODO": "confirm at audit"
+      },
       "band": [
         25,
         120
+      ],
+      "sources": [
+        "sub"
+      ]
+    },
+    {
+      "id": "fill_sides",
+      "label": "Side fills (L+R shared)",
+      "role": "fill",
+      "enabled": true,
+      "wing": {
+        "type": "mtx",
+        "num": 1,
+        "TODO": "confirm matrix number at audit"
+      },
+      "band": [
+        80,
+        16000
+      ],
+      "sources": [
+        "fill_l",
+        "fill_r"
+      ],
+      "alignTo": "mains",
+      "alignPositions": [
+        "p2",
+        "p3"
+      ]
+    },
+    {
+      "id": "fill_c",
+      "label": "Center fill",
+      "role": "fill",
+      "enabled": true,
+      "wing": {
+        "type": "mtx",
+        "num": 2,
+        "TODO": "confirm matrix number at audit"
+      },
+      "band": [
+        80,
+        16000
+      ],
+      "sources": [
+        "fill_c"
+      ],
+      "alignTo": "mains",
+      "alignPositions": [
+        "p1"
+      ]
+    },
+    {
+      "id": "fill_ub",
+      "label": "Under-balcony fills (future)",
+      "role": "fill",
+      "enabled": false,
+      "wing": {
+        "type": "mtx",
+        "num": 3,
+        "TODO": "assign when installed"
+      },
+      "band": [
+        100,
+        16000
+      ],
+      "sources": [
+        "fill_ub_l",
+        "fill_ub_c",
+        "fill_ub_r"
+      ],
+      "alignTo": "mains",
+      "alignPositions": [
+        "p5",
+        "p6"
+      ]
+    },
+    {
+      "id": "fill_balc",
+      "label": "Balcony fills (future)",
+      "role": "fill",
+      "enabled": false,
+      "wing": {
+        "type": "mtx",
+        "num": 4,
+        "TODO": "assign when installed"
+      },
+      "band": [
+        100,
+        16000
+      ],
+      "sources": [
+        "fill_balc_l",
+        "fill_balc_r"
+      ],
+      "alignTo": "mains",
+      "alignPositions": [
+        "p7",
+        "p8"
       ]
     }
   ],
@@ -65,7 +187,8 @@
     "minFilterHz": 40,
     "noBoostBelowHz": 100,
     "maxBoostQ": 2,
-    "minFilterSpacingOct": 0.33
+    "minFilterSpacingOct": 0.33,
+    "fillPrecedenceMs": 2.0
   },
   "targetCurve": {
     "name": "worship_v1",

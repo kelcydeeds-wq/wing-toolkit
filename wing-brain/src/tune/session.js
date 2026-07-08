@@ -77,9 +77,9 @@ export class TuneSession {
     this.emit('session', this.snapshot());
 
     try {
-      for (const output of this.cfg.outputs) {
+      for (const output of this.cfg.outputs.filter((o) => o.enabled !== false)) {
         this.emit('measuring', { position: pos.label, output: output.label });
-        if (this.audio.setScenario) this.audio.setScenario(output.id, pos); // mock hook
+        if (this.audio.setScenario) this.audio.setScenario(output.id, pos, output.sources); // mock hook
         await this.wing.soloOutput(output.id, this.cfg.outputs);
         await pause(400); // let mutes settle
 
@@ -184,22 +184,23 @@ export class TuneSession {
 
   /** Direct-path arrival prediction from room geometry (ms). Null if unknown. */
   predictArrivalMs(outputId, pos) {
-    const spk = (this.room.speakers || []).find((x) => x.id === outputId);
-    if (!spk || pos.x === undefined) return null;
-    const dz = (spk.z ?? 0) - (pos.z ?? 1.2);
-    const d = Math.hypot(spk.x - pos.x, spk.y - pos.y, dz);
+    const output = this.cfg.outputs.find((o) => o.id === outputId);
+    const srcIds = output?.sources || [outputId];
+    const spks = (this.room.speakers || []).filter((x) => srcIds.includes(x.id));
+    if (!spks.length || pos.x === undefined) return null;
+    // Nearest source dominates the first arrival (matters for shared-channel fills)
+    const d = Math.min(...spks.map((s) =>
+      Math.hypot(s.x - pos.x, s.y - pos.y, (s.z ?? 0) - (pos.z ?? 1.2))));
     return (d / 343) * 1000;
   }
 
   buildRecommendations() {
     const g = this.cfg.guardrails;
     const perOutput = {};
-    const delaysByOutput = {};
 
     for (const output of this.cfg.outputs) {
       const rs = this.results.filter((r) => r.outputId === output.id);
       if (!rs.length) continue;
-      delaysByOutput[output.id] = rs.map((r) => r.delayMs);
 
       const grid = rs[0].freqs;
       const weighted = rs.filter((r) => r.positionWeight > 0);
@@ -221,7 +222,9 @@ export class TuneSession {
       };
     }
 
-    const delays = recommendDelays(delaysByOutput, this.cfg.outputs[0].id);
+    const delays = recommendDelays({
+      results: this.results, outputs: this.cfg.outputs, guardrails: this.cfg.guardrails
+    });
     const zoneReport = this.buildZoneReport();
     return { perOutput, delays, zoneReport, applied: false };
   }
