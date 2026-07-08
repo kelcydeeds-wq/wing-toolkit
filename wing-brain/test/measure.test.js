@@ -1,7 +1,8 @@
 // Sanity tests for the DSP core — run with `npm test`.
 import { test } from 'node:test';
 import assert from 'node:assert';
-import { makeESS, findDelay, extractIR, magnitudeResponse } from '../src/dsp/measure.js';
+import { makeESS, findDelay, extractIR, magnitudeResponse, isClipped, estimateSnrDb }
+  from '../src/dsp/measure.js';
 
 test('cross-correlation finds a known delay and cancels shared latency', () => {
   const sr = 48000;
@@ -34,4 +35,27 @@ test('IR extraction + magnitude response run end to end', () => {
   const { freqs, magDb } = magnitudeResponse(ir, sr);
   assert.equal(freqs.length, magDb.length);
   assert.ok(freqs[0] >= 19 && freqs[freqs.length - 1] <= 20001);
+});
+
+test('isClipped detects near-full-scale peaks and passes normal levels', () => {
+  const quiet = new Float64Array(1000).map(() => (Math.random() - 0.5) * 0.1);
+  assert.equal(isClipped(quiet), false);
+  const hot = new Float64Array(quiet); hot[500] = 0.999;
+  assert.equal(isClipped(hot), true);
+});
+
+test('estimateSnrDb reads high for a clean tone over silence, low for noise-only', () => {
+  const sr = 48000;
+  const n = sr; // 1 s
+  const clean = new Float64Array(n);
+  // silence, then a strong tone in the middle third, then silence again
+  for (let i = Math.floor(n / 3); i < Math.floor(2 * n / 3); i++) {
+    clean[i] = 0.5 * Math.sin((2 * Math.PI * 1000 * i) / sr);
+  }
+  const snrClean = estimateSnrDb(clean, sr);
+  assert.ok(snrClean > 20, `expected high SNR, got ${snrClean}`);
+
+  const noiseOnly = new Float64Array(n).map(() => (Math.random() - 0.5) * 1e-4);
+  const snrNoisy = estimateSnrDb(noiseOnly, sr);
+  assert.ok(snrNoisy < snrClean, 'noise-only capture should read lower SNR than a clean tone');
 });

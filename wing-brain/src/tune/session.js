@@ -9,7 +9,8 @@
 //               compares against stored baseline, writes nothing.
 //   'full'    — all positions, all outputs, produces recommendations.
 
-import { makeESS, extractIR, findDelay, magnitudeResponse, polarity, rmsDbfs }
+import { makeESS, extractIR, findDelay, magnitudeResponse, polarity, rmsDbfs,
+         isClipped, estimateSnrDb }
   from '../dsp/measure.js';
 import { spatialAverage, targetOnGrid, recommendEQ, recommendDelays }
   from '../dsp/tune.js';
@@ -18,6 +19,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const BASELINE_PATH = path.resolve('data/baseline.json');
+const LOW_CONFIDENCE_THRESHOLD = 3;
+const LOW_SNR_THRESHOLD_DB = 15;
 
 export class TuneSession {
   constructor({ config, room, audio, wing, emit }) {
@@ -83,9 +86,14 @@ export class TuneSession {
         await this.wing.soloOutput(output.id, this.cfg.outputs);
         await pause(400); // let mutes settle
 
-        const { ref, mic } = await this.audio.playAndCapture(this.sweep, this.captureSeconds);
+        let sweep = await this.runSweep();
+        if (sweep.delay.confidence < LOW_CONFIDENCE_THRESHOLD) {
+          this.emit('info', { message: `Low confidence on ${output.label} at ${pos.label} — retrying sweep once…` });
+          const retry = await this.runSweep();
+          if (retry.delay.confidence > sweep.delay.confidence) sweep = retry;
+        }
+        const { ref, mic, delay, ir, freqs, magDb } = sweep;
 
-        const delay = findDelay(ref, mic, this.cfg.audio.sampleRate);
         const predicted = this.predictArrivalMs(output.id, pos);
         if (predicted !== null && Math.abs(delay.ms - predicted) > 8) {
           this.emit('warning', {
@@ -93,14 +101,26 @@ export class TuneSession {
             position: pos.id, output: output.id
           });
         }
-        if (delay.confidence < 3) {
+        if (delay.confidence < LOW_CONFIDENCE_THRESHOLD) {
           this.emit('warning', {
-            message: `Low confidence on ${output.label} at ${pos.label} — check mic/routing, retake recommended.`,
+            message: `Low confidence on ${output.label} at ${pos.label} even after retry — check mic/routing, retake recommended.`,
             position: pos.id, output: output.id
           });
         }
-        const ir = extractIR(mic, this.inverse, this.cfg.audio.sampleRate);
-        const { freqs, magDb } = magnitudeResponse(ir, this.cfg.audio.sampleRate);
+        const clipped = isClipped(mic);
+        if (clipped) {
+          this.emit('warning', {
+            message: `Clipped capture on ${output.label} at ${pos.label} — mic input near 0 dBFS. Lower the sweep level or mic preamp gain and retake.`,
+            position: pos.id, output: output.id
+          });
+        }
+        const snrDb = estimateSnrDb(mic, this.cfg.audio.sampleRate);
+        if (snrDb < LOW_SNR_THRESHOLD_DB) {
+          this.emit('warning', {
+            message: `Low signal-to-noise on ${output.label} at ${pos.label} (~${snrDb} dB) — check mic gain, routing, or ambient noise.`,
+            position: pos.id, output: output.id
+          });
+        }
 
         const result = {
           positionId: pos.id, positionWeight: pos.weight ?? 1,
@@ -109,6 +129,7 @@ export class TuneSession {
           delayMs: delay.ms, confidence: Math.round(delay.confidence),
           polarity: polarity(ir),
           levelDbfs: Math.round(rmsDbfs(mic) * 10) / 10,
+          snrDb, clipped,
           freqs: Array.from(freqs), magDb: Array.from(magDb)
         };
         this.results.push(result);
@@ -128,6 +149,15 @@ export class TuneSession {
       this.emit('error', { message: String(err.message || err) });
       this.emit('session', this.snapshot());
     }
+  }
+
+  /** Play/capture one sweep and run the delay + IR + magnitude pipeline. */
+  async runSweep() {
+    const { ref, mic } = await this.audio.playAndCapture(this.sweep, this.captureSeconds);
+    const delay = findDelay(ref, mic, this.cfg.audio.sampleRate);
+    const ir = extractIR(mic, this.inverse, this.cfg.audio.sampleRate);
+    const { freqs, magDb } = magnitudeResponse(ir, this.cfg.audio.sampleRate);
+    return { ref, mic, delay, ir, freqs, magDb };
   }
 
   /** Retake the previous position. */

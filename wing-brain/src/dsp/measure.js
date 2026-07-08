@@ -167,3 +167,36 @@ export function rmsDbfs(x) {
   for (const v of x) s += v * v;
   return 10 * Math.log10(s / x.length + 1e-20);
 }
+
+/** Peak sample level in dBFS. */
+export function peakDbfs(x) {
+  let peak = 0;
+  for (const v of x) { const a = Math.abs(v); if (a > peak) peak = a; }
+  return 20 * Math.log10(peak + 1e-20);
+}
+
+/** True when a capture is at (or suspiciously near) digital full scale. */
+export function isClipped(x, thresholdDbfs = -0.5) {
+  return peakDbfs(x) >= thresholdDbfs;
+}
+
+/**
+ * Signal-to-noise estimate for a sweep capture, in dB.
+ * Windowed RMS over the capture; the quietest windows are the noise floor
+ * (pad silence before/after the sweep), the loudest are the signal. Robust to
+ * where exactly the sweep lands inside the capture.
+ */
+export function estimateSnrDb(x, sampleRate, { windowSeconds = 0.05 } = {}) {
+  const win = Math.max(64, Math.floor(windowSeconds * sampleRate));
+  const rms = [];
+  for (let start = 0; start + win <= x.length; start += win) {
+    let s = 0;
+    for (let i = start; i < start + win; i++) s += x[i] * x[i];
+    rms.push(Math.sqrt(s / win));
+  }
+  if (rms.length < 4) return 0;
+  rms.sort((a, b) => a - b);
+  const noise = rms[Math.floor(rms.length * 0.1)] + 1e-12;   // 10th percentile window
+  const signal = rms[Math.floor(rms.length * 0.9)];          // 90th percentile window
+  return Math.round(20 * Math.log10(signal / noise) * 10) / 10;
+}

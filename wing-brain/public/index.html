@@ -136,7 +136,9 @@ ws.onmessage = (e) => {
     $('liveMeta').innerHTML = `<span><b>${payload.outputId}</b></span>
       <span>delay ${payload.delayMs.toFixed(1)} ms</span>
       <span>lvl ${payload.levelDbfs} dBFS</span>
-      <span class="${payload.polarity>0?'ok':'warn'}">${payload.polarity>0?'polarity +':'POLARITY −'}</span>`; }
+      <span class="${payload.polarity>0?'ok':'warn'}">${payload.polarity>0?'polarity +':'POLARITY −'}</span>
+      <span class="${payload.snrDb>=15?'ok':'warn'}">SNR ${payload.snrDb} dB</span>
+      ${payload.clipped?'<span class="warn">CLIPPED</span>':''}`; }
   if (event === 'measuring') setStatus(`Sweeping ${payload.output} @ ${payload.position}…`);
   if (event === 'warning') setStatus(payload.message, 'warn');
   if (event === 'error') setStatus(payload.message, 'warn');
