@@ -106,3 +106,26 @@ reviewed and reversed if wrong.
 - **`--dump-dir` / `dataDir`-style injection again** (see the session-history
   entry above) — `planRemap()` takes an optional `dumpDir` so tests never
   scan/write the real `data/wing-state/`.
+- **apply-remap re-reads the source channel live at execute time instead of
+  trusting the dump snapshot.** remap.json only carries a name/category/
+  reference summary, not full parameter values — and even if it did, the
+  dump could be stale by the time apply-remap runs. It queries `ch{from}`'s
+  full current state right before copying, so "copy all settings" always
+  reflects what's on the console *now*.
+- **The old channel is left alone after a move by default; `--clear-source`
+  opts into muting + blanking its name.** The task said "copy... repatch...
+  rename" for the destination, not "clear the source" — defaulting to leaving
+  the source untouched is the more conservative reading, and duplicating a
+  live mic onto two channels for one session isn't catastrophic. `--clear-source`
+  is there for whoever wants the tidy version once they trust the plan.
+- **Verify uses tolerant float comparison** (same `< 1e-3` reasoning as the
+  OSC transport tests) — an exact-equality readback check would spuriously
+  abort a real remap over float32 rounding on the console's reply, not an
+  actual failed write.
+- **`--mock` on apply-remap.mjs seeds the same before-state as
+  dump-wing-state.mjs's `--mock`.** Each script is a separate `node`
+  process, so the in-memory mock console does not persist between them —
+  without reseeding, a `dump → plan → apply --mock` dry-run chain would show
+  "0 source parameters read" for every move, which is technically correct
+  but a useless demo. `applyRemap()` also accepts a `transportOverride` for
+  tests, the same idea for the same reason.
