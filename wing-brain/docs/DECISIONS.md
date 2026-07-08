@@ -92,3 +92,17 @@ reviewed and reversed if wrong.
   references on it) — an empty/pristine mock would give plan-remap nothing
   real to reorganize and the tool chain would look like it works without
   proving it.
+- **plan-remap classification is keyword matching on the channel name**, not
+  anything smarter — deliberately so, since it's meant to be reviewed by a
+  human (the church run-sheet's dump → plan-remap → **review** →
+  apply-remap step) before anything executes. Keywords are coupled to the
+  exact label strings in `config/target-layout.json`; renaming a range there
+  means updating `CATEGORY_KEYWORDS` in plan-remap.mjs too.
+- **plan-remap minimizes moves**: a channel already sitting inside its target
+  range is left alone; only channels outside their range get relocated, into
+  the range's remaining free slots in current-channel order. A full range
+  produces a warning and leaves the extra channel(s) unmoved rather than
+  overflowing into a neighboring range silently.
+- **`--dump-dir` / `dataDir`-style injection again** (see the session-history
+  entry above) — `planRemap()` takes an optional `dumpDir` so tests never
+  scan/write the real `data/wing-state/`.
