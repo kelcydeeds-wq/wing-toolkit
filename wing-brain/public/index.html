@@ -69,6 +69,46 @@
     background:linear-gradient(transparent, var(--bg) 35%);}
   #fab .inner{max-width:560px; margin:0 auto}
   .hidden{display:none}
+
+  /* --- settings --- */
+  .hright{display:flex; align-items:center; gap:10px}
+  #gearBtn{width:auto; padding:5px 12px; font-size:16px; font-weight:600;
+    background:var(--panel2); color:var(--ink); border:1px solid var(--line); border-radius:10px}
+  input[type=text],input[type=number],select,textarea{
+    font:inherit; font-size:14px; color:var(--ink); background:var(--panel2);
+    border:1px solid var(--line); border-radius:8px; padding:8px 10px; width:100%}
+  input[type=number]{text-align:right}
+  input[type=checkbox]{width:18px; height:18px; accent-color:var(--amber)}
+  textarea{font-size:12px; line-height:1.5; resize:vertical}
+  input:disabled,select:disabled{opacity:.4}
+  .frow{display:flex; align-items:center; justify-content:space-between; gap:12px; padding:7px 0}
+  .frow>label{color:var(--dim); font-size:13px; flex:1}
+  .frow>input,.frow>select{flex:1; max-width:220px}
+  .hint{color:var(--dim); font-size:12px; margin:2px 0 8px}
+  button.small{width:auto; padding:8px 14px; font-size:13px; border-radius:10px}
+  .cardfoot{display:flex; justify-content:flex-end; gap:10px; margin-top:12px; align-items:center}
+  .modeopt{display:flex; gap:10px; align-items:flex-start; padding:8px 0; cursor:pointer}
+  .modeopt input{width:18px; height:18px; margin-top:2px; accent-color:var(--amber)}
+  .modeopt b{font-size:14px}
+  .modeopt small{display:block; color:var(--dim); font-size:12px}
+  #wingBanner{border-radius:10px; padding:9px 12px; font-size:13px; margin:-6px 0 14px;
+    border:1px solid var(--line)}
+  #wingBanner.okb{background:rgba(93,211,158,.08); border-color:var(--green); color:var(--green)}
+  #wingBanner.warnb{background:rgba(255,107,94,.08); border-color:var(--red); color:var(--red)}
+  #wingBanner.dimb{background:var(--panel); border-color:var(--amber); color:var(--amber)}
+  #toast{position:fixed; left:50%; transform:translateX(-50%); bottom:96px; z-index:10;
+    max-width:90vw; background:var(--panel2); border:1px solid var(--line); color:var(--ink);
+    border-radius:10px; padding:10px 16px; font-size:14px; opacity:0; pointer-events:none;
+    transition:opacity .25s}
+  #toast.show{opacity:1}
+  #toast.ok{border-color:var(--green); color:var(--green)}
+  #toast.warn{border-color:var(--red); color:var(--red)}
+  .otable{overflow-x:auto}
+  .otable input[type=text]{min-width:110px}
+  .otable input[type=number]{width:64px; padding:6px}
+  .otable select{width:auto; padding:6px}
+  .otable td{white-space:nowrap}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:4px 16px}
 </style>
 </head>
 <body>
@@ -78,8 +118,13 @@
       <button id="exitBtn" class="hidden" aria-label="Exit to home">←</button>
       <h1>System Tune</h1>
     </div>
-    <span id="modeBadge">—</span>
+    <div class="hright">
+      <span id="modeBadge">—</span>
+      <button id="gearBtn" aria-label="Settings">⚙</button>
+    </div>
   </header>
+
+  <div id="wingBanner" class="hidden"></div>
 
   <!-- HOME -->
   <section id="home">
@@ -136,8 +181,12 @@
   <!-- VERIFY REPORT -->
   <section id="verifyView" class="hidden"></section>
 
+  <!-- SETTINGS (rendered by JS from /api/config) -->
+  <section id="settingsView" class="hidden"></section>
+
   <div id="fab"><div class="inner" id="fabInner"></div></div>
 </div>
+<div id="toast"></div>
 
 <script>
 const ws = new WebSocket(`ws://${location.host}`);
@@ -145,9 +194,13 @@ const send = (m) => ws.readyState === 1 && ws.send(JSON.stringify(m));
 const $ = (id) => document.getElementById(id);
 
 let room = null, session = null, lastTrace = null, history = [];
+let appConfig = null;      // { config, room } — the server's live runtime config
+let settingsOpen = false;
+let wingStatus = { state: 'untested', detail: '' }; // untested | connected | unreachable
 
 ws.onmessage = (e) => {
   const { event, payload } = JSON.parse(e.data);
+  if (event === 'config') { onConfig(payload); }
   if (event === 'room') { room = payload; drawRoom($('roomMap')); renderPosList(); }
   if (event === 'session') { session = payload; render(); }
   if (event === 'trace') { lastTrace = payload; drawTrace($('liveTrace'), [seriesFrom(payload)]); 
@@ -168,7 +221,7 @@ ws.onmessage = (e) => {
 function setStatus(t, cls){ const s=$('status'); if(!s) return; s.textContent=t; s.className=cls||''; }
 
 function show(id){
-  for (const v of ['home','sessionView','reviewView','verifyView','preflightView']) $(v).classList.add('hidden');
+  for (const v of ['home','sessionView','reviewView','verifyView','preflightView','settingsView']) $(v).classList.add('hidden');
   $(id).classList.remove('hidden');
 }
 
@@ -215,8 +268,21 @@ function renderHistory(){
 
 function render(){
   $('modeBadge').textContent = (session?.mode || 'idle').toUpperCase();
-  $('exitBtn').classList.toggle('hidden', !session || session.state === 'idle' || session.state === 'preflight');
   const fab = $('fabInner'); fab.innerHTML = '';
+
+  // Settings: only browsable while nothing is mid-measurement (saving would
+  // 409 anyway — the server refuses config writes during a session).
+  const sessionBusy = session && !['idle', 'done'].includes(session.state);
+  if (sessionBusy) settingsOpen = false;
+  $('gearBtn').textContent = settingsOpen ? '✕' : '⚙';
+  $('gearBtn').classList.toggle('hidden', !!sessionBusy);
+  if (settingsOpen) {
+    $('exitBtn').classList.add('hidden');
+    show('settingsView');
+    return;
+  }
+
+  $('exitBtn').classList.toggle('hidden', !session || session.state === 'idle' || session.state === 'preflight');
 
   if (session?.state === 'preflight') {
     show('preflightView');
@@ -509,6 +575,313 @@ $('exitBtn').onclick = () => {
 $('btnVerify').onclick = () => send({action:'start', mode:'verify'});
 $('btnFull').onclick   = () => send({action:'start', mode:'full'});
 $('btnPreflight').onclick = () => send({action:'preflight'});
+
+/* ============================ SETTINGS ============================ */
+
+const esc = (s) => String(s ?? '').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');
+
+let toastTimer;
+function showToast(msg, cls){
+  const t = $('toast');
+  t.textContent = msg;
+  t.className = `show ${cls||''}`;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { t.className = ''; }, cls === 'warn' ? 6000 : 2200);
+}
+
+const dirtyCards = new Set();
+function anyCardDirty(){ return dirtyCards.size > 0; }
+function markDirty(card, yes = true){
+  if (yes) dirtyCards.add(card); else dirtyCards.delete(card);
+  const btn = $(`save_${card}`);
+  if (btn) btn.disabled = !yes;
+}
+
+function onConfig(payload){
+  appConfig = payload;
+  updateWingBanner();
+  if (settingsOpen) {
+    if (anyCardDirty()) showToast('Settings changed on another device — unsaved edits here are stale', 'warn');
+    else renderSettings();
+  }
+  if (appConfig.config.mode === 'live' && wingStatus.state === 'untested') autoTestWing();
+}
+
+function updateWingBanner(){
+  const b = $('wingBanner');
+  const cfg = appConfig?.config;
+  if (!cfg || cfg.mode !== 'live') { b.className = 'hidden'; return; }
+  const at = `${cfg.wing.host}:${cfg.wing.port}`;
+  if (wingStatus.state === 'connected') { b.className = 'okb'; b.textContent = `Connected to Wing at ${at}`; }
+  else if (wingStatus.state === 'unreachable') { b.className = 'warnb'; b.textContent = `Wing unreachable at ${at} — ${wingStatus.detail || 'no reply'}`; }
+  else { b.className = 'dimb'; b.textContent = `Live mode — Wing at ${at} not tested yet`; }
+}
+
+async function testWing(body){
+  try {
+    const res = await fetch('/api/test-wing', {
+      method: 'POST', headers: {'content-type':'application/json'}, body: JSON.stringify(body || {})
+    });
+    return await res.json();
+  } catch (err) { return { ok: false, error: String(err) }; }
+}
+
+async function autoTestWing(){
+  const r = await testWing({});
+  wingStatus = r.ok ? { state: 'connected' } : { state: 'unreachable', detail: r.message || r.error || 'timeout' };
+  updateWingBanner();
+}
+
+async function saveConfig(card, patch){
+  try {
+    const res = await fetch('/api/config', {
+      method: 'POST', headers: {'content-type':'application/json'}, body: JSON.stringify(patch)
+    });
+    const body = await res.json();
+    if (!res.ok) {
+      showToast(body.errors ? body.errors.join(' · ') : (body.error || `HTTP ${res.status}`), 'warn');
+      return false;
+    }
+    markDirty(card, false);
+    showToast('Saved', 'ok');
+    return true;
+  } catch (err) {
+    showToast(String(err), 'warn');
+    return false;
+  }
+}
+
+$('gearBtn').onclick = async () => {
+  settingsOpen = !settingsOpen;
+  if (settingsOpen) {
+    if (!appConfig) {
+      try { appConfig = await (await fetch('/api/config')).json(); }
+      catch { showToast('Could not load config', 'warn'); settingsOpen = false; render(); return; }
+    }
+    renderSettings();
+  }
+  render();
+};
+
+const GUARDRAIL_FIELDS = [
+  'eqAutoMaxHz','maxCutDb','maxBoostDb','maxFiltersPerOutput','minQ','maxQ',
+  'maxBoostQ','nullVarianceDb','minFilterHz','noBoostBelowHz','minFilterSpacingOct','tiltOnlyAboveHz'
+];
+
+let outputsDraft = null; // working copy of C.outputs while the settings page is open
+
+function renderSettings(){
+  const C = appConfig.config, R = appConfig.room;
+  dirtyCards.clear();
+  outputsDraft = structuredClone(C.outputs);
+  const el = $('settingsView');
+
+  const frow = (label, inner) => `<div class="frow"><label>${label}</label>${inner}</div>`;
+  const num = (id, value, attrs = '') => `<input type="number" id="${id}" value="${value}" ${attrs}>`;
+  const text = (id, value) => `<input type="text" id="${id}" value="${esc(value)}">`;
+
+  const outputRow = (o, i) => `
+    <tr data-i="${i}">
+      <td><input type="checkbox" class="o_en" ${o.enabled !== false ? 'checked' : ''}></td>
+      <td><input type="text" class="o_label" value="${esc(o.label)}"></td>
+      <td><select class="o_type">
+        <option value="main" ${o.wing?.type !== 'mtx' ? 'selected' : ''}>main</option>
+        <option value="mtx" ${o.wing?.type === 'mtx' ? 'selected' : ''}>mtx</option>
+      </select></td>
+      <td><input type="number" class="o_num" value="${o.wing?.num ?? 1}" min="1" max="64"></td>
+      <td><input type="number" class="o_lo" value="${o.band?.[0] ?? 20}" min="10" max="24000"></td>
+      <td><input type="number" class="o_hi" value="${o.band?.[1] ?? 20000}" min="10" max="24000"></td>
+      <td><input type="number" class="o_trim" value="${o.sweepTrimDb ?? 0}" min="-60" max="0" step="1"></td>
+    </tr>`;
+
+  const curves = C.targetCurves ?? [C.targetCurve];
+  const guardrailInput = (key) =>
+    `<div class="frow"><label>${key}</label>${num(`gr_${key}`, C.guardrails[key], 'disabled step="any"')}</div>`;
+
+  el.innerHTML = `
+    <div class="card">
+      <h2>Mode &amp; Console</h2>
+      <label class="modeopt"><input type="radio" name="set_mode" value="mock" ${C.mode === 'mock' ? 'checked' : ''}>
+        <span><b>Mock</b><small>Simulated PA + room. Full workflow, zero hardware touched — safe anywhere.</small></span></label>
+      <label class="modeopt"><input type="radio" name="set_mode" value="live" ${C.mode === 'live' ? 'checked' : ''}>
+        <span><b>Live</b><small>Real console over OSC + real audio I/O. Only on the console network.</small></span></label>
+      ${frow('Wing IP', text('set_wing_host', C.wing.host))}
+      ${frow('Wing OSC port', num('set_wing_port', C.wing.port, 'min="1" max="65535"'))}
+      <div class="cardfoot">
+        <span id="testWingResult" style="font-size:12px;color:var(--dim);flex:1"></span>
+        <button class="small secondary" id="btnTestWing">Test connection</button>
+        <button class="small" id="save_console" disabled>Save</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Audio</h2>
+      ${frow('Input device', text('set_in_dev', C.audio.inputDevice))}
+      ${frow('Output device', text('set_out_dev', C.audio.outputDevice))}
+      <p class="hint">Device names must match the audio device list on the brain box — run the device-list helper (e.g. <code>sox --help</code> / ASIO panel) to see exact strings.</p>
+      ${frow('Reference capture channel', num('set_ref_ch', C.audio.referenceInputChannel, 'min="1" max="64"'))}
+      ${frow('Mic capture channel', num('set_mic_ch', C.audio.micInputChannel, 'min="1" max="64"'))}
+      ${frow('Sweep length (s)', num('set_sweep_s', C.audio.sweep.seconds, 'min="1" max="30"'))}
+      ${frow('Sweep level (dBFS)', num('set_sweep_lvl', C.audio.sweep.levelDbfs, 'min="-60" max="-6"'))}
+      <p class="hint">Level is capped at -6 dBFS — sweep headroom is not optional.</p>
+      <div class="cardfoot"><button class="small" id="save_audio" disabled>Save</button></div>
+    </div>
+
+    <div class="card">
+      <h2>Outputs</h2>
+      <div class="otable"><table id="outputsTable">
+        <tr><th>On</th><th>Label</th><th>Route</th><th>#</th><th>Lo Hz</th><th>Hi Hz</th><th>Trim dB</th></tr>
+        ${outputsDraft.map(outputRow).join('')}
+      </table></div>
+      <div class="cardfoot">
+        <button class="small secondary" id="btnAddOutput">+ Add output</button>
+        <button class="small" id="save_outputs" disabled>Save</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Tuning</h2>
+      ${frow('Target curve', `<select id="set_curve">${curves.map((c) =>
+        `<option value="${esc(c.name)}" ${c.name === C.targetCurve.name ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>`)}
+      ${frow('Fill precedence (ms)', num('set_fillprec', C.guardrails.fillPrecedenceMs, 'min="0" max="20" step="0.5"'))}
+      <p class="hint">Guardrails are safety limits enforced in code on every recommendation (local or Claude). Read-only unless unlocked.</p>
+      <label class="modeopt"><input type="checkbox" id="set_unlock_gr">
+        <span><b>Unlock advanced</b><small>Edit guardrail limits. Know why before changing these.</small></span></label>
+      <div class="grid2">${GUARDRAIL_FIELDS.map(guardrailInput).join('')}</div>
+      <div class="frow"><label>requireApplyTap</label><input type="checkbox" id="gr_requireApplyTap" ${C.guardrails.requireApplyTap ? 'checked' : ''} disabled></div>
+      <div class="cardfoot"><button class="small" id="save_tuning" disabled>Save</button></div>
+    </div>
+
+    <div class="card">
+      <h2>Room</h2>
+      ${frow('Verify position', `<select id="set_verify_pos">${R.positions.map((p) =>
+        `<option value="${esc(p.id)}" ${p.id === R.verifyPosition ? 'selected' : ''}>${esc(p.label)}</option>`).join('')}</select>`)}
+      <p class="hint">${esc(R.name)} · ${R.width} m wide · ${R.positions.length} positions · ${(R.speakers || []).length} speakers</p>
+      <p class="hint">Room geometry edits still happen in config/room.json for now — positions drive delay predictions, so they change with a tape measure, not a form.</p>
+      <div class="cardfoot"><button class="small" id="save_room" disabled>Save</button></div>
+    </div>
+
+    <div class="card">
+      <h2>Advanced</h2>
+      <p class="hint">Raw config editor — the escape hatch. Validated server-side before anything is written; saving REPLACES the whole config (deletions stick).</p>
+      <textarea id="set_rawjson" rows="16" spellcheck="false"></textarea>
+      <div class="cardfoot">
+        <button class="small secondary" id="btnRawReload">Reload</button>
+        <button class="small" id="save_raw" disabled>Validate &amp; Save</button>
+      </div>
+    </div>`;
+
+  $('set_rawjson').value = JSON.stringify(C, null, 2);
+
+  // Dirty tracking: any input inside a card enables that card's save button.
+  const wire = (card, ids) => {
+    for (const id of ids) {
+      const node = $(id);
+      if (node) node.addEventListener('input', () => markDirty(card));
+    }
+  };
+  wire('console', ['set_wing_host', 'set_wing_port']);
+  document.querySelectorAll('input[name=set_mode]').forEach((r) => r.addEventListener('change', () => markDirty('console')));
+  wire('audio', ['set_in_dev', 'set_out_dev', 'set_ref_ch', 'set_mic_ch', 'set_sweep_s', 'set_sweep_lvl']);
+  $('outputsTable').addEventListener('input', () => markDirty('outputs'));
+  wire('tuning', ['set_curve', 'set_fillprec', 'gr_requireApplyTap', ...GUARDRAIL_FIELDS.map((k) => `gr_${k}`)]);
+  $('set_curve').addEventListener('change', () => markDirty('tuning'));
+  $('set_verify_pos').addEventListener('change', () => markDirty('room'));
+  $('set_rawjson').addEventListener('input', () => markDirty('raw'));
+
+  /* --- card 1: mode & console --- */
+  $('btnTestWing').onclick = async () => {
+    const mode = document.querySelector('input[name=set_mode]:checked')?.value;
+    const out = $('testWingResult');
+    out.style.color = 'var(--dim)'; out.textContent = 'testing…';
+    const r = await testWing({ mode, host: $('set_wing_host').value.trim(), port: Number($('set_wing_port').value) });
+    if (r.mock) { out.style.color = 'var(--green)'; out.textContent = 'mock — always connected'; }
+    else if (r.ok) {
+      out.style.color = 'var(--green)'; out.textContent = `reply from ${r.host}:${r.port} (${r.address})`;
+      wingStatus = { state: 'connected' }; updateWingBanner();
+    } else {
+      out.style.color = 'var(--red)'; out.textContent = r.message || r.error || 'timeout';
+      wingStatus = { state: 'unreachable', detail: r.message || r.error || 'timeout' }; updateWingBanner();
+    }
+  };
+  $('save_console').onclick = async () => {
+    const ok = await saveConfig('console', { config: {
+      mode: document.querySelector('input[name=set_mode]:checked')?.value,
+      wing: { host: $('set_wing_host').value.trim(), port: Number($('set_wing_port').value) }
+    }});
+    if (ok) { wingStatus = { state: 'untested', detail: '' }; updateWingBanner(); }
+  };
+
+  /* --- card 2: audio --- */
+  $('save_audio').onclick = () => saveConfig('audio', { config: { audio: {
+    inputDevice: $('set_in_dev').value.trim(),
+    outputDevice: $('set_out_dev').value.trim(),
+    referenceInputChannel: Number($('set_ref_ch').value),
+    micInputChannel: Number($('set_mic_ch').value),
+    sweep: { seconds: Number($('set_sweep_s').value), levelDbfs: Number($('set_sweep_lvl').value) }
+  }}});
+
+  /* --- card 3: outputs --- */
+  $('btnAddOutput').onclick = () => {
+    const usedIds = new Set(outputsDraft.map((o) => o.id));
+    let n = 1; while (usedIds.has(`fill_new_${n}`)) n++;
+    const usedMtx = outputsDraft.filter((o) => o.wing?.type === 'mtx').map((o) => o.wing.num);
+    let mtxNum = 1; while (usedMtx.includes(mtxNum)) mtxNum++;
+    const fresh = { id: `fill_new_${n}`, label: `New fill ${n}`, role: 'fill', enabled: false,
+      wing: { type: 'mtx', num: mtxNum, TODO: 'assign at console' }, band: [80, 16000], sweepTrimDb: 0 };
+    outputsDraft.push(fresh);
+    $('outputsTable').insertAdjacentHTML('beforeend', outputRow(fresh, outputsDraft.length - 1));
+    markDirty('outputs');
+  };
+  $('save_outputs').onclick = () => {
+    const rows = [...document.querySelectorAll('#outputsTable tr[data-i]')];
+    const outputs = rows.map((tr) => {
+      const orig = outputsDraft[Number(tr.dataset.i)];
+      const q = (cls) => tr.querySelector(`.${cls}`);
+      return { ...orig,
+        enabled: q('o_en').checked,
+        label: q('o_label').value.trim(),
+        wing: { ...orig.wing, type: q('o_type').value, num: Number(q('o_num').value) },
+        band: [Number(q('o_lo').value), Number(q('o_hi').value)],
+        sweepTrimDb: Number(q('o_trim').value)
+      };
+    });
+    return saveConfig('outputs', { config: { outputs } });
+  };
+
+  /* --- card 4: tuning --- */
+  $('set_unlock_gr').onchange = (e) => {
+    const unlocked = e.target.checked;
+    for (const k of GUARDRAIL_FIELDS) $(`gr_${k}`).disabled = !unlocked;
+    $('gr_requireApplyTap').disabled = !unlocked;
+  };
+  $('save_tuning').onclick = () => {
+    const guardrails = { fillPrecedenceMs: Number($('set_fillprec').value) };
+    if ($('set_unlock_gr').checked) {
+      for (const k of GUARDRAIL_FIELDS) guardrails[k] = Number($(`gr_${k}`).value);
+      guardrails.requireApplyTap = $('gr_requireApplyTap').checked;
+    }
+    const patch = { config: { guardrails } };
+    const chosen = curves.find((c) => c.name === $('set_curve').value);
+    if (chosen && chosen.name !== C.targetCurve.name) patch.config.targetCurve = chosen;
+    return saveConfig('tuning', patch);
+  };
+
+  /* --- card 5: room --- */
+  $('save_room').onclick = () => saveConfig('room', { room: { verifyPosition: $('set_verify_pos').value } });
+
+  /* --- card 6: advanced --- */
+  $('btnRawReload').onclick = () => {
+    $('set_rawjson').value = JSON.stringify(appConfig.config, null, 2);
+    markDirty('raw', false);
+  };
+  $('save_raw').onclick = () => {
+    let parsed;
+    try { parsed = JSON.parse($('set_rawjson').value); }
+    catch (err) { showToast(`JSON parse error: ${err.message}`, 'warn'); return; }
+    return saveConfig('raw', { config: parsed, replace: true });
+  };
+}
 
 function mkBtn(html, cls, fn){
   const b=document.createElement('button');

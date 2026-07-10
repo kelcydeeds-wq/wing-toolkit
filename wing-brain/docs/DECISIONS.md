@@ -30,6 +30,52 @@ reviewed and reversed if wrong.
   1 second) can land squarely on a synthetic mode. The clip check is the
   correct fix regardless of why a peak comes back nonsensical.
 
+## 2026-07-10 — Settings page
+
+- **Config edits go through `POST /api/config`** with merge semantics:
+  objects merge recursively, **arrays and scalars replace wholesale** (the
+  outputs table always sends the complete array — index-splicing reordered
+  lists would corrupt them). The raw-JSON escape hatch sends `replace: true`
+  because a merge can never *delete* a key, and an escape hatch that can't
+  remove things isn't one.
+- **Saves are refused (409) while a session is in
+  waiting_position/measuring/preflight/review** — rebuilding the runtime
+  mid-measurement would discard in-flight results, and in review it would
+  silently discard recommendations pending Apply. `idle` and `done` allow
+  saves; a save from `done` resets to home, which is acceptable since the
+  session record is already persisted to history at that point.
+- **Runtime rebuild instead of restart:** audio IO, Wing client, and a fresh
+  TuneSession are recreated from the new config on every successful save
+  (`buildRuntime()` in server.js). The old Wing transport is closed first.
+  All handlers read the `session` variable at call time, so no stale refs.
+- **`MODE` env var is a boot-time override only** (npm run dev forces mock).
+  After boot, the Settings page's mode toggle is authoritative for the
+  running process AND is persisted to disk — but a `npm run dev` restart
+  forces mock again. `npm start` respects the saved file. GET /api/config
+  reports the runtime truth, so the UI never lies about the active mode.
+- **Validation ranges are typo-catchers, not tuning judgment** — "could any
+  sane PA ever want this" caps (port 1-65535, band lo<hi, sweep ≤ -6 dBFS,
+  guardrails within generous outer bounds). Guardrail defaults themselves
+  are untouched; the UI additionally hides guardrail editing behind an
+  "unlock advanced" toggle since they're safety limits.
+- **Room API surface is verifyPosition only.** Geometry drives delay
+  predictions and changes with a tape measure on-site, not from a phone
+  form — the settings card says so and the server rejects other room keys.
+- **test-wing tries several candidate query addresses** (`/?`, `/xinfo`,
+  `/info`, `/main/lr/config/name`) and succeeds on any reply — the real
+  Wing's info address is still `TODO(church)`, and a connectivity probe
+  shouldn't false-negative just because one guessed address is wrong. It
+  accepts host/port/mode in the body so the UI can test values *before*
+  saving them.
+- **Atomic writes**: temp file + rename in the same directory
+  (`writeJsonAtomic`), so a crash mid-save can't leave a half-written
+  config. Round-tripping through JSON.stringify normalizes number
+  formatting (`2.0` → `2`) — cosmetic only.
+- **scripts/smoke-settings.mjs** is a manual end-to-end check of the whole
+  API against a running dev server (15 assertions incl. the 409 and
+  broadcast paths). Not in `npm test` because it needs the live server and
+  briefly rewrites real config files (it restores them, even on failure).
+
 ## 2026-07-08 — refinement run (Parts A + B)
 
 - **CLAUDE.md and AI_MIX_MASTER_BUILD_PLAN.md do not exist** in this repo (only
