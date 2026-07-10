@@ -198,50 +198,145 @@
     "minFilterSpacingOct": 0.33,
     "fillPrecedenceMs": 2
   },
-  "targetCurve": {
-    "name": "worship_v1",
-    "comment": "Smooth downward tilt, warm low-mids, controlled presence. Points are Hz:dB relative anchors, interpolated log-frequency.",
-    "points": [
-      [
-        31.5,
-        6
-      ],
-      [
-        63,
-        5
-      ],
-      [
-        125,
-        3
-      ],
-      [
-        250,
-        1.5
-      ],
-      [
-        500,
-        0.5
-      ],
-      [
-        1000,
-        0
-      ],
-      [
-        2000,
-        -1
-      ],
-      [
-        4000,
-        -2.5
-      ],
-      [
-        8000,
-        -4.5
-      ],
-      [
-        16000,
-        -7
+  "targetCurves": {
+    "elevation": {
+      "name": "elevation",
+      "comment": "Informed approximation, not measured data — vocal-forward, tight/controlled low end, bright presence. Refine against real reference tracks in Phase 1.",
+      "points": [
+        [
+          31.5,
+          4
+        ],
+        [
+          63,
+          4
+        ],
+        [
+          125,
+          2
+        ],
+        [
+          250,
+          0
+        ],
+        [
+          500,
+          -0.5
+        ],
+        [
+          1000,
+          0
+        ],
+        [
+          2000,
+          1
+        ],
+        [
+          4000,
+          0.5
+        ],
+        [
+          8000,
+          -1.5
+        ],
+        [
+          16000,
+          -3.5
+        ]
       ]
-    ]
-  }
+    },
+    "bethel": {
+      "name": "bethel",
+      "comment": "Informed approximation — atmospheric, warmer/fuller low end for pads, softer top, vocal blended rather than forward.",
+      "points": [
+        [
+          31.5,
+          7
+        ],
+        [
+          63,
+          6
+        ],
+        [
+          125,
+          4
+        ],
+        [
+          250,
+          2
+        ],
+        [
+          500,
+          0.5
+        ],
+        [
+          1000,
+          0
+        ],
+        [
+          2000,
+          -0.5
+        ],
+        [
+          4000,
+          -2
+        ],
+        [
+          8000,
+          -5.5
+        ],
+        [
+          16000,
+          -9
+        ]
+      ]
+    },
+    "general": {
+      "name": "general",
+      "comment": "Recommended default for this building — flat through vocal presence region for sermon intelligibility, moderate safe tilt otherwise.",
+      "points": [
+        [
+          31.5,
+          5
+        ],
+        [
+          63,
+          4.5
+        ],
+        [
+          125,
+          2.5
+        ],
+        [
+          250,
+          1
+        ],
+        [
+          500,
+          0
+        ],
+        [
+          1000,
+          0
+        ],
+        [
+          2000,
+          0
+        ],
+        [
+          4000,
+          -1.5
+        ],
+        [
+          8000,
+          -3.5
+        ],
+        [
+          16000,
+          -6
+        ]
+      ]
+    }
+  },
+  "selectedTargetCurve": "general"
 }

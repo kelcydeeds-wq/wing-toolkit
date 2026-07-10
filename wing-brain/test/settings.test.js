@@ -5,7 +5,7 @@ import assert from 'node:assert';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { mergeDeep, writeJsonAtomic, validateConfig, validateRoomPatch } from '../src/config/settings.js';
+import { mergeDeep, writeJsonAtomic, validateConfig, validateRoomPatch, activeTargetCurve } from '../src/config/settings.js';
 
 const goodConfig = () => JSON.parse(fs.readFileSync(new URL('../config/default.json', import.meta.url), 'utf8'));
 const room = JSON.parse(fs.readFileSync(new URL('../config/room.json', import.meta.url), 'utf8'));
@@ -57,6 +57,15 @@ test('writeJsonAtomic overwrites an existing file in place', () => {
 
 test('the shipped default config validates clean', () => {
   assert.deepEqual(validateConfig(goodConfig()), []);
+});
+
+/* --------------------------- activeTargetCurve ---------------------------- */
+
+test('activeTargetCurve resolves the curve named by selectedTargetCurve', () => {
+  const cfg = goodConfig();
+  assert.equal(activeTargetCurve(cfg).name, 'general');
+  cfg.selectedTargetCurve = 'bethel';
+  assert.equal(activeTargetCurve(cfg).name, 'bethel');
 });
 
 test('rejects out-of-range ports', () => {
@@ -125,7 +134,7 @@ test('rejects a positive sweep trim (trims attenuate, never boost)', () => {
 
 test('rejects a target curve with non-ascending frequencies', () => {
   const cfg = goodConfig();
-  cfg.targetCurve.points = [[100, 0], [50, 1], [200, 2]];
+  cfg.targetCurves.general.points = [[100, 0], [50, 1], [200, 2]];
   assert.ok(validateConfig(cfg).some((e) => /ascending/.test(e)));
 });
 
@@ -138,12 +147,30 @@ test('reports multiple errors at once with path-specific messages', () => {
   assert.ok(errors.length >= 3, `expected at least 3 errors, got: ${errors.join(' | ')}`);
 });
 
-test('accepts an optional targetCurves list and validates each entry', () => {
+test('accepts multiple named target curves and validates each entry', () => {
   const cfg = goodConfig();
-  cfg.targetCurves = [cfg.targetCurve, { name: 'flat', points: [[20, 0], [20000, 0]] }];
+  cfg.targetCurves.flat = { name: 'flat', points: [[20, 0], [20000, 0]] };
   assert.deepEqual(validateConfig(cfg), []);
-  cfg.targetCurves.push({ name: '', points: [[20, 0]] });
-  assert.ok(validateConfig(cfg).some((e) => /targetCurves\[2\]/.test(e)));
+  cfg.targetCurves.broken = { name: 'broken', points: [[20, 0]] };
+  assert.ok(validateConfig(cfg).some((e) => /targetCurves\.broken/.test(e)));
+});
+
+test('rejects selectedTargetCurve pointing at a curve that does not exist', () => {
+  const cfg = goodConfig();
+  cfg.selectedTargetCurve = 'nonexistent';
+  assert.ok(validateConfig(cfg).some((e) => /selectedTargetCurve/.test(e)));
+});
+
+test('rejects a targetCurves entry whose name does not match its map key', () => {
+  const cfg = goodConfig();
+  cfg.targetCurves.general.name = 'mismatched';
+  assert.ok(validateConfig(cfg).some((e) => /targetCurves\.general\.name/.test(e)));
+});
+
+test('rejects an empty targetCurves object', () => {
+  const cfg = goodConfig();
+  cfg.targetCurves = {};
+  assert.ok(validateConfig(cfg).some((e) => /targetCurves/.test(e)));
 });
 
 /* ---------------------------- validateRoomPatch -------------------------- */

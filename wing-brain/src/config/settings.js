@@ -162,13 +162,27 @@ export function validateConfig(config) {
       prev = p[0];
     }
   };
-  curveErrors(config.targetCurve, 'targetCurve');
-  if (config.targetCurves !== undefined) {
-    if (!Array.isArray(config.targetCurves)) bad('targetCurves: must be an array of curves');
-    else config.targetCurves.forEach((c, i) => curveErrors(c, `targetCurves[${i}]`));
+  const curves = config.targetCurves;
+  if (!curves || typeof curves !== 'object' || Array.isArray(curves) || Object.keys(curves).length === 0) {
+    bad('targetCurves: must be a non-empty object of {curveName: curve}');
+  } else {
+    for (const [key, curve] of Object.entries(curves)) {
+      curveErrors(curve, `targetCurves.${key}`);
+      if (isStr(curve?.name) && curve.name !== key) bad(`targetCurves.${key}.name: must match its map key ("${curve.name}" != "${key}")`);
+    }
+    if (!isStr(config.selectedTargetCurve) || !curves[config.selectedTargetCurve]) {
+      bad(`selectedTargetCurve: must be a key present in targetCurves (got ${JSON.stringify(config.selectedTargetCurve)})`);
+    }
   }
 
   return errors;
+}
+
+/** The currently-active target curve object — the one lookup every caller
+ *  (tune session, advisor prompt) should go through, so nothing reads
+ *  targetCurves[selected] by hand and risks a stale/mistyped key. */
+export function activeTargetCurve(config) {
+  return config.targetCurves[config.selectedTargetCurve];
 }
 
 /**

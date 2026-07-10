@@ -3,6 +3,38 @@
 Running log of judgment calls made during autonomous work runs, so they can be
 reviewed and reversed if wrong.
 
+## 2026-07-10 — multiple named target curves (elevation / bethel / general)
+
+- **`config.targetCurve` (single object) replaced with `config.targetCurves`**
+  (a `{name: curve}` map) **+ `config.selectedTargetCurve`** (a string key
+  into that map), seeded with three curves the user supplied: `elevation`
+  (vocal-forward, tight low end, bright presence), `bethel` (atmospheric,
+  warmer/fuller low end, softer top), and `general` (the shipped default —
+  flat through vocal presence for sermon intelligibility, moderate safe
+  tilt otherwise). This slots into the Settings page's existing "Tuning"
+  card, whose target-curve dropdown already read `C.targetCurves` — it just
+  had one placeholder curve to choose from before.
+- **A curve's map key must equal its own `.name`** (validated in
+  `settings.js`) — one canonical name per curve, no risk of a UI dropdown
+  value and a stored curve's `.name` field silently drifting apart.
+- **Added `activeTargetCurve(config)`** in `src/config/settings.js` — the
+  one place that resolves `targetCurves[selectedTargetCurve]`. Both
+  `src/tune/session.js` (`buildRecommendations()`) and `src/tune/advisor.js`
+  (`buildAnalysisPayload()`) now call it instead of reading `config.targetCurve`
+  directly, so there's a single lookup to get right rather than two
+  hand-written ones that could disagree on a stale/mistyped key.
+- **Settings UI**: the dropdown now saves `selectedTargetCurve` (a string)
+  rather than pushing a whole curve object back through `POST /api/config`
+  — cheaper diff, and the curve data itself is edited via the raw-JSON
+  escape hatch, not the dropdown. Added a one-line hint under the dropdown
+  showing the selected curve's `.comment`, updated on change, so an operator
+  picking between three curves by name alone isn't guessing what "bethel"
+  sounds like.
+- **Curve data is explicitly "informed approximation, not measured data"**
+  per the user's own `comment` fields — carried through unedited. Not this
+  session's judgment call to revise; flagged here only so a future session
+  doesn't mistake the numbers for calibrated targets.
+
 ## 2026-07-10 — Wing OSC address correction (real spec from church visit)
 
 - **Every previously-guessed Wing OSC address was wrong in a consistent way.**

@@ -6,6 +6,7 @@ import assert from 'node:assert';
 import fs from 'node:fs';
 import { spatialAverage, targetOnGrid, recommendEQ, recommendDelays }
   from '../src/dsp/tune.js';
+import { activeTargetCurve } from '../src/config/settings.js';
 
 const config = JSON.parse(fs.readFileSync(new URL('../config/default.json', import.meta.url), 'utf8'));
 const g = config.guardrails;
@@ -148,7 +149,7 @@ test('spatialAverage: variance is zero for identical curves, grows with disagree
 
 /* ------------------- band-limited EQ ----------------------- */
 
-const target = () => targetOnGrid(config.targetCurve.points, grid);
+const target = () => targetOnGrid(activeTargetCurve(config).points, grid);
 
 test('recommendEQ never places filters outside the output band (sub case)', () => {
   const avg = flat();

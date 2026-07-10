@@ -694,7 +694,7 @@ function renderSettings(){
       <td><input type="number" class="o_trim" value="${o.sweepTrimDb ?? 0}" min="-60" max="0" step="1"></td>
     </tr>`;
 
-  const curves = C.targetCurves ?? [C.targetCurve];
+  const curves = Object.values(C.targetCurves);
   const guardrailInput = (key) =>
     `<div class="frow"><label>${key}</label>${num(`gr_${key}`, C.guardrails[key], 'disabled step="any"')}</div>`;
 
@@ -742,7 +742,8 @@ function renderSettings(){
     <div class="card">
       <h2>Tuning</h2>
       ${frow('Target curve', `<select id="set_curve">${curves.map((c) =>
-        `<option value="${esc(c.name)}" ${c.name === C.targetCurve.name ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>`)}
+        `<option value="${esc(c.name)}" ${c.name === C.selectedTargetCurve ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>`)}
+      <p class="hint" id="curveHint">${esc(curves.find((c) => c.name === C.selectedTargetCurve)?.comment || '')}</p>
       ${frow('Fill precedence (ms)', num('set_fillprec', C.guardrails.fillPrecedenceMs, 'min="0" max="20" step="0.5"'))}
       <p class="hint">Guardrails are safety limits enforced in code on every recommendation (local or Claude). Read-only unless unlocked.</p>
       <label class="modeopt"><input type="checkbox" id="set_unlock_gr">
@@ -785,7 +786,10 @@ function renderSettings(){
   wire('audio', ['set_in_dev', 'set_out_dev', 'set_ref_ch', 'set_mic_ch', 'set_sweep_s', 'set_sweep_lvl']);
   $('outputsTable').addEventListener('input', () => markDirty('outputs'));
   wire('tuning', ['set_curve', 'set_fillprec', 'gr_requireApplyTap', ...GUARDRAIL_FIELDS.map((k) => `gr_${k}`)]);
-  $('set_curve').addEventListener('change', () => markDirty('tuning'));
+  $('set_curve').addEventListener('change', () => {
+    markDirty('tuning');
+    $('curveHint').textContent = curves.find((c) => c.name === $('set_curve').value)?.comment || '';
+  });
   $('set_verify_pos').addEventListener('change', () => markDirty('room'));
   $('set_rawjson').addEventListener('input', () => markDirty('raw'));
 
@@ -862,8 +866,7 @@ function renderSettings(){
       guardrails.requireApplyTap = $('gr_requireApplyTap').checked;
     }
     const patch = { config: { guardrails } };
-    const chosen = curves.find((c) => c.name === $('set_curve').value);
-    if (chosen && chosen.name !== C.targetCurve.name) patch.config.targetCurve = chosen;
+    if ($('set_curve').value !== C.selectedTargetCurve) patch.config.selectedTargetCurve = $('set_curve').value;
     return saveConfig('tuning', patch);
   };
 

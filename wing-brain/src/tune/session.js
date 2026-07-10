@@ -15,6 +15,7 @@ import { makeESS, makeBlip, scaleBuffer, extractIR, findDelay, magnitudeResponse
 import { spatialAverage, targetOnGrid, recommendEQ, recommendDelays }
   from '../dsp/tune.js';
 import { buildAnalysisPayload, claudeTune, validate } from './advisor.js';
+import { activeTargetCurve } from '../config/settings.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -366,7 +367,7 @@ export class TuneSession {
       const { avg, varDb } = spatialAverage(
         (weighted.length ? weighted : rs).map((r) => ({ magDb: Float64Array.from(r.magDb), weight: r.positionWeight || 1 }))
       );
-      const target = targetOnGrid(this.cfg.targetCurve.points, Float64Array.from(grid));
+      const target = targetOnGrid(activeTargetCurve(this.cfg).points, Float64Array.from(grid));
       const filters = recommendEQ({
         freqs: Float64Array.from(grid), avg, varDb, target, guardrails: g,
         band: output.band

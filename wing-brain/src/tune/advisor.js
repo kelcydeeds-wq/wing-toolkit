@@ -13,6 +13,7 @@
 // result "source: local".
 
 import { recommendEQ, recommendDelays, spatialAverage, targetOnGrid } from '../dsp/tune.js';
+import { activeTargetCurve } from '../config/settings.js';
 
 const API_URL = 'https://api.anthropic.com/v1/messages';
 const MODEL = 'claude-sonnet-4-6';
@@ -43,7 +44,7 @@ export function buildAnalysisPayload({ config, room, results, localRec }) {
       }))
     );
     const grid = Float64Array.from(rs[0].freqs);
-    const target = targetOnGrid(config.targetCurve.points, grid);
+    const target = targetOnGrid(activeTargetCurve(config).points, grid);
     outputs[output.id] = {
       label: output.label,
       band: output.band,
@@ -65,7 +66,7 @@ export function buildAnalysisPayload({ config, room, results, localRec }) {
         ({ id, label, zone, x, y, z, weight }))
     },
     guardrails: config.guardrails,
-    targetCurveName: config.targetCurve.name,
+    targetCurveName: activeTargetCurve(config).name,
     outputs,
     localRecommendation: localRec ? {
       note: 'heuristic fallback recommender output — improve on it, ignore it, or endorse it',
