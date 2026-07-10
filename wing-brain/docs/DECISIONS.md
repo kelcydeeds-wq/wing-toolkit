@@ -30,6 +30,38 @@ reviewed and reversed if wrong.
   1 second) can land squarely on a synthetic mode. The clip check is the
   correct fix regardless of why a peak comes back nonsensical.
 
+## 2026-07-10 — church-kit (double-clickable run-sheet)
+
+- **`church-kit/` is CHURCH_SESSION.md as numbered .bat files** for the
+  church PC — no VSCode, no typed commands. Batch (not PowerShell) because
+  double-clicking .ps1 opens an editor on default Windows policy; .bat just
+  runs. Every script `cd`s to the repo root via `%~dp0..`, ends with
+  `pause`, and fails loudly rather than flashing a window shut.
+- **The Wing IP is asked once and cached in `church-kit/wing-ip.txt`**
+  (gitignored) — subsequent scripts read it silently and step 2 re-prompts
+  with it as the default. Deleting the file resets it.
+- **Step 5 (execute) demands a typed all-caps `YES`** and restates the
+  three preconditions (USB backup, plan reviewed, dry-run sane) before the
+  prompt. Steps 2-4 are read-only and say so in their banners.
+- **Every bat was actually executed on this machine** — including 2/4/5
+  against a real UDP fake-Wing responder on 127.0.0.1:2223 (91/91 parameter
+  reads, full write+verify round trip, and the cancel path). Testing them
+  found a real bug (next bullet), which is why "scripts I can't click
+  don't count as done".
+- **Bug found by the bat test, fixed in plan-remap.mjs:** the catch-all
+  range lookup used `/unassigned|spare/i`, which matches **"Keys + spare"**
+  (an instrument range that merely reserves a spare slot) before the actual
+  "Unassigned / spare" range — every unclassifiable channel was crammed
+  into the 5 keys rows. The unit tests missed it because their synthetic
+  layout had no colliding label; there's now a regression test that runs
+  against the real `config/target-layout.json`.
+- **Test-runner foot-gun for posterity:** a temporary helper file named
+  `test-responder.mjs` in the repo root matched `node --test`'s `test-*`
+  discovery pattern. Being a UDP server, it never exits — the whole test
+  run hung with no failure output (even `--test-force-exit` doesn't help,
+  since that only fires after tests complete). Helpers that must not be
+  discovered belong outside the repo or under names that can't match.
+
 ## 2026-07-10 — Settings page
 
 - **Config edits go through `POST /api/config`** with merge semantics:

@@ -111,6 +111,21 @@ test('unclassified channels fall into the spare/unassigned range', () => {
   assert.ok(move.to >= 7 && move.to <= 9);
 });
 
+test('REAL layout: unclassified channels land in "Unassigned / spare", never in "Keys + spare"', () => {
+  // Regression: the catch-all lookup used /unassigned|spare/i, which matched
+  // "Keys + spare" (an instrument range that merely reserves a spare slot)
+  // before the actual unassigned range — every unknown channel got crammed
+  // into the 5 keys rows. Test against the REAL config, whose labels have
+  // exactly that collision.
+  const realLayout = JSON.parse(fs.readFileSync(new URL('../config/target-layout.json', import.meta.url), 'utf8'));
+  const dump = makeDump([{ index: 3, name: 'Mystery Line' }]);
+  const plan = buildRemapPlan(dump, realLayout);
+  const move = plan.moves.find((m) => m.name === 'Mystery Line');
+  assert.ok(move, 'unclassified channel should still get a placement');
+  assert.equal(move.category, 'Unassigned / spare');
+  assert.ok(move.to >= 26 && move.to <= 38, `should land in 26-38, got ${move.to}`);
+});
+
 test('a range with no free slots produces a warning and the channel is left unmoved', () => {
   const dump = makeDump([
     { index: 4, name: 'Kick In' }, { index: 5, name: 'Snare' }, // fill Drums (4-5)

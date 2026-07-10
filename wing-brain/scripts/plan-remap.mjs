@@ -110,7 +110,12 @@ export function buildRemapPlan(dump, targetLayout) {
     else unclassified.push(c);
   }
 
-  const spareRange = targetLayout.ranges.find((r) => /unassigned|spare/i.test(r.label));
+  // The catch-all range for unclassifiable channels. "unassigned" first —
+  // a bare /spare/ match would grab "Keys + spare" / "Guitars/bass + spares"
+  // (instrument ranges that merely RESERVE spare slots) before the actual
+  // unassigned range, dumping every unknown channel into the keys rows.
+  const spareRange = targetLayout.ranges.find((r) => /unassigned/i.test(r.label))
+    ?? targetLayout.ranges.find((r) => /^spare/i.test(r.label));
   if (spareRange) byLabel.get(spareRange.label).push(...unclassified);
 
   const warnings = [];
