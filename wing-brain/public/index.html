@@ -109,6 +109,31 @@
   .otable select{width:auto; padding:6px}
   .otable td{white-space:nowrap}
   .grid2{display:grid; grid-template-columns:1fr 1fr; gap:4px 16px}
+
+  /* --- loudness meter: glanceable, not a graph --- */
+  #loudnessMeter{display:flex; align-items:center; gap:10px; border-radius:10px;
+    padding:8px 12px; margin:-6px 0 14px; border:1px solid var(--line); background:var(--panel)}
+  #loudnessMeter .lm-num{font-size:15px; font-weight:700; font-variant-numeric:tabular-nums; min-width:64px}
+  #loudnessMeter .lm-label{font-size:11px; color:var(--dim); letter-spacing:.06em; text-transform:uppercase}
+  #loudnessMeter .lm-bar{flex:1; height:8px; border-radius:99px; background:var(--panel2); position:relative; overflow:hidden}
+  #loudnessMeter .lm-fill{position:absolute; left:0; top:0; bottom:0; border-radius:99px; transition:width .3s}
+  #loudnessMeter .lm-target{position:absolute; top:-2px; bottom:-2px; width:2px; background:var(--ink); opacity:.6}
+  #loudnessMeter.lm-ok .lm-fill{background:var(--green)}
+  #loudnessMeter.lm-quiet .lm-fill{background:var(--blue)}
+  #loudnessMeter.lm-warn{border-color:var(--amber)}
+  #loudnessMeter.lm-warn .lm-fill{background:var(--amber)}
+  #loudnessMeter.lm-alert{border-color:var(--red)}
+  #loudnessMeter.lm-alert .lm-fill{background:var(--red)}
+  #loudnessMeter.lm-ok .lm-num{color:var(--green)}
+  #loudnessMeter.lm-quiet .lm-num{color:var(--blue)}
+  #loudnessMeter.lm-warn .lm-num{color:var(--amber)}
+  #loudnessMeter.lm-alert .lm-num{color:var(--red)}
+
+  /* --- loudness report card --- */
+  .llist{margin:10px 0 0; padding:0; list-style:none}
+  .llist li{padding:8px 2px; border-bottom:1px dashed var(--line); font-size:13px}
+  .llist .lrow1{display:flex; justify-content:space-between; color:var(--dim)}
+  .llist .lrow2{display:flex; gap:12px; margin-top:3px; font-size:12px}
 </style>
 </head>
 <body>
@@ -125,6 +150,11 @@
   </header>
 
   <div id="wingBanner" class="hidden"></div>
+  <div id="loudnessMeter" class="hidden">
+    <span class="lm-label">SPL</span>
+    <span class="lm-num" id="lmNum">—</span>
+    <div class="lm-bar"><div class="lm-fill" id="lmFill" style="width:0%"></div><div class="lm-target" id="lmTargetMark" style="left:0%"></div></div>
+  </div>
 
   <!-- HOME -->
   <section id="home">
@@ -148,6 +178,10 @@
     <div class="card hidden" id="historyCard">
       <h2>Recent sessions</h2>
       <ul class="poslist" id="historyList"></ul>
+    </div>
+    <div class="card hidden" id="loudnessHistoryCard">
+      <h2>Loudness log</h2>
+      <ul class="llist" id="loudnessHistoryList"></ul>
     </div>
   </section>
 
@@ -197,13 +231,15 @@ let room = null, session = null, lastTrace = null, history = [];
 let appConfig = null;      // { config, room } — the server's live runtime config
 let settingsOpen = false;
 let wingStatus = { state: 'untested', detail: '' }; // untested | connected | unreachable
+let loudness = null;       // last { levelDb, status, targetDb, ... } from the loudness monitor
+let loudnessHistory = [];
 
 ws.onmessage = (e) => {
   const { event, payload } = JSON.parse(e.data);
   if (event === 'config') { onConfig(payload); }
   if (event === 'room') { room = payload; drawRoom($('roomMap')); renderPosList(); }
   if (event === 'session') { session = payload; render(); }
-  if (event === 'trace') { lastTrace = payload; drawTrace($('liveTrace'), [seriesFrom(payload)]); 
+  if (event === 'trace') { lastTrace = payload; drawTrace($('liveTrace'), [seriesFrom(payload)]);
     $('liveMeta').innerHTML = `<span><b>${payload.outputId}</b></span>
       <span>delay ${payload.delayMs.toFixed(1)} ms</span>
       <span>lvl ${payload.levelDbfs} dBFS</span>
@@ -213,10 +249,46 @@ ws.onmessage = (e) => {
   if (event === 'measuring') setStatus(`Sweeping ${payload.output} @ ${payload.position}…`);
   if (event === 'preflight_progress') renderPreflightLive(payload);
   if (event === 'sessionHistory') { history = payload; renderHistory(); }
+  if (event === 'loudness') { loudness = payload; renderLoudnessMeter(); }
+  if (event === 'loudnessHistory') { loudnessHistory = payload; renderLoudnessHistory(); }
   if (event === 'warning') setStatus(payload.message, 'warn');
   if (event === 'error') setStatus(payload.message, 'warn');
   if (event === 'info') setStatus(payload.message, 'ok');
 };
+
+/** Compact bar+number meter, glanceable mid-service — not a graph. Visible
+ *  whenever the monitor has a reading and settings isn't open (screen space). */
+function renderLoudnessMeter(){
+  const el = $('loudnessMeter');
+  if (!loudness || settingsOpen) { el.classList.add('hidden'); return; }
+  el.classList.remove('hidden');
+  el.className = `lm-${loudness.status}`;
+  $('lmNum').textContent = `${loudness.levelDb} dB`;
+  // Bar spans quietTarget-10 (or target-20) .. target+hardMargin+3, target mark shown.
+  const lo = loudness.quietTargetDb ?? (loudness.targetDb - 20);
+  const hi = loudness.targetDb + loudness.hardMarginDb + 3;
+  const pct = (v) => Math.max(0, Math.min(100, ((v - lo) / (hi - lo)) * 100));
+  $('lmFill').style.width = `${pct(loudness.levelDb)}%`;
+  $('lmTargetMark').style.left = `${pct(loudness.targetDb)}%`;
+}
+
+function renderLoudnessHistory(){
+  const card = $('loudnessHistoryCard');
+  if (!loudnessHistory.length) { card.classList.add('hidden'); return; }
+  card.classList.remove('hidden');
+  $('loudnessHistoryList').innerHTML = loudnessHistory.map((r) => {
+    const s = r.secondsInStatus || {};
+    const fmtMin = (sec) => sec >= 60 ? `${Math.round(sec/60)} min` : `${Math.round(sec)} s`;
+    return `<li>
+      <div class="lrow1"><span>${fmtWhen(r.startedAt)}</span><span>avg ${r.avgDb ?? '—'} dB · peak ${r.peakDb ?? '—'} dB</span></div>
+      <div class="lrow2">
+        ${s.warn ? `<span style="color:var(--amber)">amber ${fmtMin(s.warn)}</span>` : ''}
+        ${s.alert ? `<span style="color:var(--red)">red ${fmtMin(s.alert)}</span>` : ''}
+        ${!s.warn && !s.alert ? '<span class="ok">clean — no threshold time</span>' : ''}
+      </div>
+    </li>`;
+  }).join('');
+}
 
 function setStatus(t, cls){ const s=$('status'); if(!s) return; s.textContent=t; s.className=cls||''; }
 
@@ -269,6 +341,7 @@ function renderHistory(){
 function render(){
   $('modeBadge').textContent = (session?.mode || 'idle').toUpperCase();
   const fab = $('fabInner'); fab.innerHTML = '';
+  renderLoudnessMeter();
 
   // Settings: only browsable while nothing is mid-measurement (saving would
   // 409 anyway — the server refuses config writes during a session).
@@ -754,6 +827,33 @@ function renderSettings(){
     </div>
 
     <div class="card">
+      <h2>Loudness</h2>
+      <label class="modeopt"><input type="checkbox" id="lm_enabled" ${C.loudnessMonitor.enabled ? 'checked' : ''}>
+        <span><b>Enabled</b><small>Continuous LEQ monitor during services — independent of tune sessions.</small></span></label>
+      ${frow('Reference position', `<select id="lm_pos">${R.positions.map((p) =>
+        `<option value="${esc(p.id)}" ${p.id === C.loudnessMonitor.referencePositionId ? 'selected' : ''}>${esc(p.label)}</option>`).join('')}</select>`)}
+      <p class="hint">Which measured position the reference mic represents. Update this if the booth/mic moves — never hardcoded.</p>
+      ${frow('Target (dB)', num('lm_target', C.loudnessMonitor.targetDb, 'min="40" max="120"'))}
+      ${frow('Soft margin (amber, dB)', num('lm_soft', C.loudnessMonitor.softMarginDb, 'min="0" max="20" step="0.5"'))}
+      ${frow('Hard margin (red, dB)', num('lm_hard', C.loudnessMonitor.hardMarginDb, 'min="0" max="30" step="0.5"'))}
+      ${frow('Sustained (s) before warning', num('lm_sustained', C.loudnessMonitor.sustainedSeconds, 'min="0" max="120"'))}
+      ${frow('Integration window', `<select id="lm_window">${['LEQ5','LEQ10','LEQ15','LEQ30','LEQ60'].map((w) =>
+        `<option value="${w}" ${w === C.loudnessMonitor.integrationWindow ? 'selected' : ''}>${w}</option>`).join('')}</select>`)}
+      <label class="modeopt"><input type="checkbox" id="lm_quiet_on" ${C.loudnessMonitor.quietTargetDb != null ? 'checked' : ''}>
+        <span><b>Warn if too quiet</b><small>Optional low-end floor — off by default.</small></span></label>
+      ${frow('Quiet floor (dB)', num('lm_quiet', C.loudnessMonitor.quietTargetDb ?? (C.loudnessMonitor.targetDb - 15), 'min="40" max="120"'))}
+      <div class="cardfoot"><button class="small" id="save_loudness" disabled>Save</button></div>
+      <p class="hint" style="margin-top:14px">Calibration: stand at the reference position, read an SPL meter, type the reading in, and this converts it into the dBFS→dB SPL offset the monitor uses.</p>
+      <div class="frow"><label>Current raw level</label><span id="lm_current_dbfs" style="font-size:13px;color:var(--dim)">${loudness ? `${(loudness.levelDb - (C.audio.splDbOffset ?? 0)).toFixed(1)} dBFS` : 'no reading yet'}</span></div>
+      <div class="frow"><label>SPL meter reading now</label>${num('lm_cal_input', '', 'step="0.1" placeholder="e.g. 94.2"')}</div>
+      <div class="cardfoot">
+        <span id="lm_cal_result" style="font-size:12px;color:var(--dim);flex:1"></span>
+        <button class="small secondary" id="btnCalibrate">Calibrate</button>
+      </div>
+      <p class="hint">Saved offset: ${C.audio.splDbOffset != null ? `${C.audio.splDbOffset.toFixed(1)} dB` : 'not calibrated yet — meter reads raw dBFS'}</p>
+    </div>
+
+    <div class="card">
       <h2>Room</h2>
       ${frow('Verify position', `<select id="set_verify_pos">${R.positions.map((p) =>
         `<option value="${esc(p.id)}" ${p.id === R.verifyPosition ? 'selected' : ''}>${esc(p.label)}</option>`).join('')}</select>`)}
@@ -792,6 +892,11 @@ function renderSettings(){
   });
   $('set_verify_pos').addEventListener('change', () => markDirty('room'));
   $('set_rawjson').addEventListener('input', () => markDirty('raw'));
+  wire('loudness', ['lm_enabled', 'lm_pos', 'lm_target', 'lm_soft', 'lm_hard', 'lm_sustained', 'lm_window', 'lm_quiet_on', 'lm_quiet']);
+  $('lm_pos').addEventListener('change', () => markDirty('loudness'));
+  $('lm_window').addEventListener('change', () => markDirty('loudness'));
+  $('lm_enabled').addEventListener('change', () => markDirty('loudness'));
+  $('lm_quiet_on').addEventListener('change', () => markDirty('loudness'));
 
   /* --- card 1: mode & console --- */
   $('btnTestWing').onclick = async () => {
@@ -870,10 +975,38 @@ function renderSettings(){
     return saveConfig('tuning', patch);
   };
 
-  /* --- card 5: room --- */
+  /* --- card 5: loudness --- */
+  $('save_loudness').onclick = () => saveConfig('loudness', { config: { loudnessMonitor: {
+    enabled: $('lm_enabled').checked,
+    referencePositionId: $('lm_pos').value,
+    targetDb: Number($('lm_target').value),
+    softMarginDb: Number($('lm_soft').value),
+    hardMarginDb: Number($('lm_hard').value),
+    sustainedSeconds: Number($('lm_sustained').value),
+    integrationWindow: $('lm_window').value,
+    quietTargetDb: $('lm_quiet_on').checked ? Number($('lm_quiet').value) : null
+  }}});
+  $('btnCalibrate').onclick = async () => {
+    const reading = Number($('lm_cal_input').value);
+    const out = $('lm_cal_result');
+    if (!Number.isFinite(reading)) { out.style.color = 'var(--red)'; out.textContent = 'enter the SPL meter reading first'; return; }
+    out.style.color = 'var(--dim)'; out.textContent = 'calibrating…';
+    try {
+      const res = await fetch('/api/loudness/calibrate', {
+        method: 'POST', headers: {'content-type':'application/json'},
+        body: JSON.stringify({ splMeterReadingDb: reading })
+      });
+      const body = await res.json();
+      if (!res.ok) { out.style.color = 'var(--red)'; out.textContent = body.error || (body.errors || []).join(' · '); return; }
+      out.style.color = 'var(--green)'; out.textContent = `offset saved: ${body.offsetDb} dB (measured ${body.measuredDbfs} dBFS)`;
+      showToast('Calibrated', 'ok');
+    } catch (err) { out.style.color = 'var(--red)'; out.textContent = String(err); }
+  };
+
+  /* --- card 6: room --- */
   $('save_room').onclick = () => saveConfig('room', { room: { verifyPosition: $('set_verify_pos').value } });
 
-  /* --- card 6: advanced --- */
+  /* --- card 7: advanced --- */
   $('btnRawReload').onclick = () => {
     $('set_rawjson').value = JSON.stringify(appConfig.config, null, 2);
     markDirty('raw', false);

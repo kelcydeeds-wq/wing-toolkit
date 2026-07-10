@@ -14,6 +14,7 @@ import { makeWing } from './wing/client.js';
 import { makeOscTransport } from './wing/osc.js';
 import { TuneSession, listSessionHistory } from './tune/session.js';
 import { validateConfig, validateRoomPatch, mergeDeep, writeJsonAtomic } from './config/settings.js';
+import { LoudnessMonitor, listLoudnessHistory, computeSplOffset } from './audio/loudness-monitor.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
@@ -46,12 +47,17 @@ function broadcast(event, payload) {
 
 // audio/wing/session are recreated whenever settings are saved — no server
 // restart. Everything that touches them reads these variables at call time.
-let audio, wing, session;
+// The loudness monitor is deliberately separate from `session` — it must
+// keep running through tune sessions, mode changes, everything.
+let audio, wing, session, loudness;
 function buildRuntime() {
   try { wing?.close?.(); } catch { /* old transport may already be gone */ }
+  try { loudness?.stop?.(); } catch { /* best effort */ }
   audio = makeAudioIO(config);
   wing = makeWing(config);
   session = new TuneSession({ config, room, audio, wing, emit: broadcast });
+  loudness = new LoudnessMonitor({ config, room, emit: broadcast });
+  loudness.start();
 }
 buildRuntime();
 
@@ -83,6 +89,39 @@ app.get('/api/sessions/:id', (req, res) => {
   res.download(file, `${req.params.id}.json`);
 });
 
+/* ---------------------------- Loudness monitor ---------------------------- */
+
+// Recent loudness records (see data/loudness/) — average/peak/time-in-status
+// per monitored stretch, for the Monday-report summary card. Independent of
+// tune session history.
+app.get('/api/loudness/history', (_req, res) => {
+  res.json(listLoudnessHistory());
+});
+
+// One-time calibration: operator stands at the reference position with an
+// SPL meter, reads it, and POSTs that reading. We compare it against the
+// monitor's current (uncalibrated) dBFS reading and save the offset.
+app.post('/api/loudness/calibrate', (req, res) => {
+  const { splMeterReadingDb } = req.body || {};
+  if (typeof splMeterReadingDb !== 'number' || !Number.isFinite(splMeterReadingDb)) {
+    return res.status(400).json({ error: 'splMeterReadingDb: must be a number' });
+  }
+  const dbfs = loudness.currentDbfs();
+  if (dbfs === null || !Number.isFinite(dbfs)) {
+    return res.status(409).json({ error: 'no loudness reading yet — wait a few seconds for the monitor to warm up and retry' });
+  }
+  const offsetDb = computeSplOffset(dbfs, splMeterReadingDb);
+  const nextConfig = mergeDeep(config, { audio: { splDbOffset: offsetDb } });
+  const errors = validateConfig(nextConfig, room);
+  if (errors.length) return res.status(400).json({ error: 'validation failed', errors });
+
+  writeJsonAtomic(CONFIG_PATH, nextConfig);
+  config = nextConfig;
+  buildRuntime();
+  broadcast('config', { config, room });
+  res.json({ ok: true, offsetDb: Math.round(offsetDb * 10) / 10, measuredDbfs: Math.round(dbfs * 10) / 10, config });
+});
+
 /* ------------------------------ Settings API ----------------------------- */
 
 app.get('/api/config', (_req, res) => {
@@ -103,7 +142,7 @@ app.post('/api/config', (req, res) => {
     // replace:true = the raw-JSON escape hatch, where deletions must stick;
     // a merge can only add/overwrite keys, never remove them.
     nextConfig = replace ? cfgPatch : mergeDeep(config, cfgPatch);
-    const errors = validateConfig(nextConfig);
+    const errors = validateConfig(nextConfig, room);
     if (errors.length) return res.status(400).json({ error: 'validation failed', errors });
   }
 
@@ -164,6 +203,9 @@ wss.on('connection', (ws) => {
   ws.send(JSON.stringify({ event: 'session', payload: session.snapshot() }));
   ws.send(JSON.stringify({ event: 'room', payload: room }));
   ws.send(JSON.stringify({ event: 'sessionHistory', payload: listSessionHistory() }));
+  ws.send(JSON.stringify({ event: 'loudnessHistory', payload: listLoudnessHistory() }));
+  const loudnessSnapshot = loudness.snapshot();
+  if (loudnessSnapshot) ws.send(JSON.stringify({ event: 'loudness', payload: loudnessSnapshot }));
 
   ws.on('message', async (raw) => {
     let msg;

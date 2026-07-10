@@ -14,6 +14,7 @@
     "outputDevice": "SoundGrid",
     "referenceInputChannel": 1,
     "micInputChannel": 2,
+    "splDbOffset": null,
     "sweep": {
       "type": "ess",
       "f1": 20,
@@ -338,5 +339,15 @@
       ]
     }
   },
-  "selectedTargetCurve": "general"
+  "selectedTargetCurve": "general",
+  "loudnessMonitor": {
+    "enabled": true,
+    "referencePositionId": "p4",
+    "targetDb": 93,
+    "softMarginDb": 2,
+    "hardMarginDb": 5,
+    "sustainedSeconds": 8,
+    "integrationWindow": "LEQ10",
+    "quietTargetDb": null
+  }
 }

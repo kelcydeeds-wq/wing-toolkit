@@ -45,9 +45,13 @@ const isStr = (v) => typeof v === 'string' && v.trim().length > 0;
 /**
  * Validate a FULL config object (callers merge partial updates into the
  * current config first, so every rule always sees complete context).
+ * `room` is optional — when provided, loudnessMonitor.referencePositionId is
+ * cross-checked against room.positions (it must name a real position, never
+ * free text); omitting `room` skips that one cross-object check, which is
+ * how existing config-only unit tests keep working unchanged.
  * Returns an array of error strings; empty array = valid.
  */
-export function validateConfig(config) {
+export function validateConfig(config, room) {
   const errors = [];
   const bad = (msg) => errors.push(msg);
 
@@ -70,6 +74,11 @@ export function validateConfig(config) {
   if (!isStr(a.outputDevice)) bad('audio.outputDevice: must be a non-empty string');
   for (const ch of ['referenceInputChannel', 'micInputChannel']) {
     if (!isInt(a[ch]) || a[ch] < 1 || a[ch] > 64) bad(`audio.${ch}: must be an integer 1-64`);
+  }
+  if (a.splDbOffset !== undefined && a.splDbOffset !== null) {
+    if (!isNum(a.splDbOffset) || a.splDbOffset < -60 || a.splDbOffset > 200) {
+      bad('audio.splDbOffset: must be null (uncalibrated) or a number -60 to 200');
+    }
   }
 
   const s = a.sweep || {};
@@ -172,6 +181,40 @@ export function validateConfig(config) {
     }
     if (!isStr(config.selectedTargetCurve) || !curves[config.selectedTargetCurve]) {
       bad(`selectedTargetCurve: must be a key present in targetCurves (got ${JSON.stringify(config.selectedTargetCurve)})`);
+    }
+  }
+
+  const lm = config.loudnessMonitor;
+  if (!lm || typeof lm !== 'object') {
+    bad('loudnessMonitor: must be an object');
+  } else {
+    if (typeof lm.enabled !== 'boolean') bad('loudnessMonitor.enabled: must be a boolean');
+    if (!isStr(lm.referencePositionId)) {
+      bad('loudnessMonitor.referencePositionId: must be a non-empty string');
+    } else if (room) {
+      const ids = (room.positions || []).map((p) => p.id);
+      if (!ids.includes(lm.referencePositionId)) {
+        bad(`loudnessMonitor.referencePositionId: "${lm.referencePositionId}" is not a known room position (${ids.join(', ')})`);
+      }
+    }
+    if (!isNum(lm.targetDb) || lm.targetDb < 40 || lm.targetDb > 120) bad('loudnessMonitor.targetDb: must be 40-120 dB');
+    if (!isNum(lm.softMarginDb) || lm.softMarginDb < 0 || lm.softMarginDb > 20) bad('loudnessMonitor.softMarginDb: must be 0-20 dB');
+    if (!isNum(lm.hardMarginDb) || lm.hardMarginDb < 0 || lm.hardMarginDb > 30) bad('loudnessMonitor.hardMarginDb: must be 0-30 dB');
+    if (isNum(lm.softMarginDb) && isNum(lm.hardMarginDb) && lm.softMarginDb >= lm.hardMarginDb) {
+      bad('loudnessMonitor: softMarginDb must be less than hardMarginDb');
+    }
+    if (!isNum(lm.sustainedSeconds) || lm.sustainedSeconds < 0 || lm.sustainedSeconds > 120) {
+      bad('loudnessMonitor.sustainedSeconds: must be 0-120 seconds');
+    }
+    if (!/^LEQ\d+$/i.test(String(lm.integrationWindow || ''))) {
+      bad('loudnessMonitor.integrationWindow: must look like "LEQ10" (an integer seconds window)');
+    }
+    if (lm.quietTargetDb !== null && lm.quietTargetDb !== undefined) {
+      if (!isNum(lm.quietTargetDb) || lm.quietTargetDb < 40 || lm.quietTargetDb > 120) {
+        bad('loudnessMonitor.quietTargetDb: must be null (disabled) or 40-120 dB');
+      } else if (isNum(lm.targetDb) && lm.quietTargetDb >= lm.targetDb) {
+        bad('loudnessMonitor.quietTargetDb: must be less than targetDb');
+      }
     }
   }
 

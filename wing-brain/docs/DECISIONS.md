@@ -3,6 +3,87 @@
 Running log of judgment calls made during autonomous work runs, so they can be
 reviewed and reversed if wrong.
 
+## 2026-07-10 — live loudness monitor (continuous LEQ, independent of tune sessions)
+
+- **New module `src/audio/loudness-monitor.js`**, deliberately NOT touching
+  `TuneSession` — per explicit instruction, services happen far more often
+  than full tune sessions and this must keep running through all of them
+  (mode changes aside). `server.js`'s `buildRuntime()` owns a separate
+  `loudness` runtime object alongside `audio`/`wing`/`session`, stopped and
+  recreated on every settings save same as the others.
+- **Every internal clock is audio-time, not wall-clock.** `LeqAccumulator`
+  advances its elapsed-seconds counter purely from `frame.length /
+  sampleRate` as frames are pushed, and `LevelClassifier`'s sustained-timers
+  key off that same clock. This was the single most important design choice
+  in the module: it means `LoudnessMonitor.pushFrame()` is fully
+  deterministic and testable by calling it in a loop with synthetic frames —
+  no fake timers, no wall-clock flakiness, and a live run behaves
+  identically to a test run frame-for-frame.
+- **LEQ is a real rolling window**, not an IIR/exponential approximation: a
+  deque of `{sumSq, n, tEnd}` chunks, trimmed from the front once a chunk's
+  end falls outside `windowSeconds` (parsed from `"LEQ10"` etc. via
+  `parseIntegrationWindowSeconds`). Chunk-boundary trimming means the window
+  is accurate to within one capture-frame duration, which is standard
+  practice for chunked LEQ metering and plenty precise for an 8-120s
+  sustained-threshold decision.
+- **Sustained-threshold logic clears immediately on drop, no hysteresis on
+  the way down.** A level dipping back under a margin resets that margin's
+  "since" timer to null right away — only the *rising* edge requires
+  `sustainedSeconds` of continuous overage to fire. This satisfies "ignores
+  single transient hits" without over-engineering a second debounce for
+  clearing; LEQ10+ is already smoothed enough that clearing flappiness
+  wasn't judged a real risk. Revisit if real-world use shows the status
+  flickering ok/warn near the threshold edge.
+- **Calibration is a pure offset**: `computeSplOffset(measuredDbfs,
+  splMeterReadingDb) = splMeterReadingDb - measuredDbfs`, stored as
+  `config.audio.splDbOffset` (null = uncalibrated, meter reads raw dBFS).
+  `POST /api/loudness/calibrate` reads the monitor's current raw LEQ via a
+  new `currentDbfs()` getter, computes the offset, and pushes it through the
+  existing validate → atomic-write → `buildRuntime()` pipeline — same path
+  as every other settings save, no separate persistence mechanism.
+- **`validateConfig(config, room)` gained an optional second parameter** to
+  cross-check `loudnessMonitor.referencePositionId` against
+  `room.positions` (must name a real position, never free text, per
+  explicit instruction). `room` is optional specifically so every existing
+  config-only unit test keeps working unchanged — omitting it just skips
+  that one cross-object check rather than failing closed or open in a
+  surprising way. `server.js` always passes the live `room` object.
+- **Live continuous capture is a TODO(church) stub**
+  (`LoudnessMonitor._defaultFrameSource()` returns a no-op frame source in
+  live mode) — the existing `audio/io.js` abstraction only exposes one-shot
+  `playAndCapture()` for sweeps, not a persistent streaming tap. Wiring a
+  real continuous capture off the SoundGrid device, and figuring out whether
+  it needs to yield the physical input during a Full Tune sweep (device
+  contention on the same channel) is unresolved and needs the church visit
+  to answer, not a guess made from the office.
+- **Mock frame generation (`mockLoudnessFrame`) rescales synthesized noise
+  to land its RMS exactly on the intended dBFS target** (measure the raw
+  noise's actual level, then apply the exact gain needed) rather than
+  relying on the noise's incidental level — makes the "slowly drifting +
+  occasional spikes" mock deterministic and testable with a stubbed
+  `Math.random`, instead of a statistical/approximate assertion.
+- **A very long always-on run auto-rotates into a fresh record every 4
+  hours** (`MAX_RECORD_SECONDS`) so a service that runs long, or a box left
+  running for days, doesn't accumulate one giant unflushed in-memory record
+  that's lost on a crash. Persisted records are pruned to the 5 most recent,
+  mirroring `MAX_SESSION_HISTORY`'s existing pattern in `tune/session.js`.
+- **Persisted records store summary stats + a transition log, not raw
+  readings** — avg/peak/seconds-in-each-status plus `{t, status}` on every
+  flip. Keeps files tiny across hours of monitoring; the "small summary
+  card" the UI needs never needed per-second history on disk.
+- **Repeated the exact test-pollution mistake documented earlier in this
+  file** while writing this module's own tests: three `LoudnessMonitor`
+  instances in `test/loudness-monitor.test.js` called `start()`/`stop()`
+  without passing `dataDir`, silently writing real files into
+  `wing-brain/data/loudness/` on every `npm test` run (caught by manually
+  inspecting that folder after a dev-server smoke test, not by the tests
+  themselves — they don't assert anything about the real data dir, so they
+  stayed green while polluting it). Fixed by routing every monitor that
+  calls `start()`+`stop()` through a shared `tmpDataDir()` helper. Same root
+  cause, same fix shape as the tune-session history fix from 2026-07-08 —
+  worth remembering that *any* new stateful module with a default
+  `dataDir='data'` needs this from the first test, not discovered after.
+
 ## 2026-07-10 — multiple named target curves (elevation / bethel / general)
 
 - **`config.targetCurve` (single object) replaced with `config.targetCurves`**

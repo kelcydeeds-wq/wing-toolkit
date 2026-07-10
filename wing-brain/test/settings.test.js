@@ -59,6 +59,10 @@ test('the shipped default config validates clean', () => {
   assert.deepEqual(validateConfig(goodConfig()), []);
 });
 
+test('the shipped default config validates clean against the real room (referencePositionId cross-check included)', () => {
+  assert.deepEqual(validateConfig(goodConfig(), room), []);
+});
+
 /* --------------------------- activeTargetCurve ---------------------------- */
 
 test('activeTargetCurve resolves the curve named by selectedTargetCurve', () => {
@@ -171,6 +175,61 @@ test('rejects an empty targetCurves object', () => {
   const cfg = goodConfig();
   cfg.targetCurves = {};
   assert.ok(validateConfig(cfg).some((e) => /targetCurves/.test(e)));
+});
+
+/* ---------------------------- loudnessMonitor ---------------------------- */
+
+test('rejects a loudnessMonitor.referencePositionId that is not free text but also not a real room position', () => {
+  const cfg = goodConfig();
+  cfg.loudnessMonitor.referencePositionId = 'not-a-real-position';
+  assert.ok(validateConfig(cfg, room).some((e) => /referencePositionId/.test(e)));
+});
+
+test('accepts any non-empty referencePositionId when no room is supplied for cross-checking', () => {
+  const cfg = goodConfig();
+  cfg.loudnessMonitor.referencePositionId = 'not-a-real-position';
+  assert.deepEqual(validateConfig(cfg), [], 'without room, only the type is checked, not room membership');
+});
+
+test('rejects loudnessMonitor.softMarginDb >= hardMarginDb', () => {
+  const cfg = goodConfig();
+  cfg.loudnessMonitor.softMarginDb = 6;
+  cfg.loudnessMonitor.hardMarginDb = 5;
+  assert.ok(validateConfig(cfg).some((e) => /softMarginDb must be less than hardMarginDb/.test(e)));
+});
+
+test('rejects a malformed loudnessMonitor.integrationWindow', () => {
+  const cfg = goodConfig();
+  cfg.loudnessMonitor.integrationWindow = '10 seconds';
+  assert.ok(validateConfig(cfg).some((e) => /integrationWindow/.test(e)));
+});
+
+test('accepts loudnessMonitor.quietTargetDb = null (disabled) and rejects it when >= targetDb', () => {
+  const cfg = goodConfig();
+  cfg.loudnessMonitor.quietTargetDb = null;
+  assert.deepEqual(validateConfig(cfg), []);
+  cfg.loudnessMonitor.quietTargetDb = cfg.loudnessMonitor.targetDb;
+  assert.ok(validateConfig(cfg).some((e) => /quietTargetDb: must be less than targetDb/.test(e)));
+});
+
+test('rejects loudnessMonitor.sustainedSeconds out of range', () => {
+  const cfg = goodConfig();
+  cfg.loudnessMonitor.sustainedSeconds = -1;
+  assert.ok(validateConfig(cfg).some((e) => /sustainedSeconds/.test(e)));
+});
+
+test('requires loudnessMonitor to be present at all', () => {
+  const cfg = goodConfig();
+  delete cfg.loudnessMonitor;
+  assert.ok(validateConfig(cfg).some((e) => /loudnessMonitor: must be an object/.test(e)));
+});
+
+test('accepts audio.splDbOffset = null (uncalibrated) and rejects an out-of-range offset', () => {
+  const cfg = goodConfig();
+  cfg.audio.splDbOffset = null;
+  assert.deepEqual(validateConfig(cfg), []);
+  cfg.audio.splDbOffset = 500;
+  assert.ok(validateConfig(cfg).some((e) => /splDbOffset/.test(e)));
 });
 
 /* ---------------------------- validateRoomPatch -------------------------- */
