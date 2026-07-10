@@ -13,10 +13,11 @@
 // the source channel's current values (so the preview is real), it just
 // never writes or verifies.
 //
-// TODO(church): the addresses this reads/writes (see wing-schema.mjs) are
-// unconfirmed guesses. Run this against --mock first, then try --execute on
-// one low-risk channel against the real console before trusting it for a
-// full plan.
+// Addresses this reads/writes (see wing-schema.mjs) are confirmed against the
+// official Wing OSC spec, except DCA/mute-group membership, which is still
+// TODO(church) -- unconfirmed. Run this against --mock first, then try
+// --execute on one low-risk channel against the real console before
+// trusting it for a full plan.
 //
 // Usage:
 //   node scripts/apply-remap.mjs --remap <plan.json> --mock
@@ -27,7 +28,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { makeOscTransport } from '../src/wing/osc.js';
-import { channelStrip, leafAddresses } from './wing-schema.mjs';
+import { channelStrip, leafAddresses, readValue } from './wing-schema.mjs';
 import { seedMockConsole } from './dump-wing-state.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -73,8 +74,6 @@ function tolerantEqual(a, b) {
   return false;
 }
 
-function firstOrArray(v) { return Array.isArray(v) ? v : [v]; }
-
 function retarget(address, fromIndex, toIndex) {
   return address.replace(`/ch/${fromIndex}/`, `/ch/${toIndex}/`);
 }
@@ -103,8 +102,8 @@ export async function copyChannel(transport, move, { execute, timeoutMs, clearSo
 
   const writes = answered.map(([addr, v]) => ({ address: retarget(addr, from, to), value: v }));
   // Force the name explicitly even if the name address itself didn't answer.
-  if (!writes.some((w) => w.address === `/ch/${to}/config/name`)) {
-    writes.push({ address: `/ch/${to}/config/name`, value: [name] });
+  if (!writes.some((w) => w.address === `/ch/${to}/name`)) {
+    writes.push({ address: `/ch/${to}/name`, value: [name] });
   }
 
   if (!execute) {
@@ -113,22 +112,22 @@ export async function copyChannel(transport, move, { execute, timeoutMs, clearSo
     return { from, to, name, status: 'dry-run', writeCount: writes.length };
   }
 
-  for (const w of writes) transport.send(w.address, firstOrArray(w.value));
+  for (const w of writes) transport.send(w.address, [readValue(w.value)]);
   for (const dca of references?.dca || []) transport.send(`/ch/${to}/grp/dca/${dca}`, [1]);
   for (const grp of references?.muteGroups || []) transport.send(`/ch/${to}/grp/mute/${grp}`, [1]);
   for (const s of references?.sends || []) {
-    transport.send(`/ch/${to}/mix/${s.bus}/on`, [1]);
-    if (s.level !== null && s.level !== undefined) transport.send(`/ch/${to}/mix/${s.bus}/level`, [s.level]);
+    transport.send(`/ch/${to}/send/${s.bus}/on`, [1]);
+    if (s.level !== null && s.level !== undefined) transport.send(`/ch/${to}/send/${s.bus}/lvl`, [s.level]);
   }
   log(`  wrote ${writes.length} parameter(s), verifying...`);
 
   const mismatches = [];
   for (const w of writes) {
     const readback = await transport.get(w.address, { timeoutMs });
-    const expected = firstOrArray(w.value);
-    const ok = readback !== null && readback.length === expected.length &&
-      readback.every((v, i) => tolerantEqual(v, expected[i]));
-    if (!ok) mismatches.push({ address: w.address, expected, got: readback });
+    const expected = readValue(w.value);
+    const got = readback === null ? null : readValue(readback);
+    const ok = readback !== null && tolerantEqual(got, expected);
+    if (!ok) mismatches.push({ address: w.address, expected, got });
   }
 
   if (mismatches.length) {
@@ -141,7 +140,7 @@ export async function copyChannel(transport, move, { execute, timeoutMs, clearSo
 
   if (clearSource) {
     log(`  clearing source ch${from} (mute + blank name)`);
-    transport.send(`/ch/${from}/config/name`, ['']);
+    transport.send(`/ch/${from}/name`, ['']);
     transport.send(`/ch/${from}/mute`, [1]);
   }
 

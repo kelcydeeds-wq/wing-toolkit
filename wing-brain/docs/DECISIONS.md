@@ -3,6 +3,67 @@
 Running log of judgment calls made during autonomous work runs, so they can be
 reviewed and reversed if wrong.
 
+## 2026-07-10 — Wing OSC address correction (real spec from church visit)
+
+- **Every previously-guessed Wing OSC address was wrong in a consistent way.**
+  The user brought back the real Wing OSC spec after a church visit and a
+  real state dump (`data/wing-state/2026-07-10T21-05-05-211Z.json`, 455/5087
+  addresses answered under the *old* guessed scheme = 8.9%). Corrected
+  `scripts/wing-schema.mjs` (the single source of truth shared by
+  dump/plan/apply-remap and `src/wing/client.js`) per the corrected map:
+  fader is `/<kind>/<n>/fdr`; mains are numbered `/main/1..4` (no `"lr"`);
+  channel name/color are `/ch/<n>/name` / `/col` (not `config/name`); EQ
+  bands are flat leaves `/eq/1f /eq/1g /eq/1q` (channels also have fixed
+  `/eq/lf|lg|lq|leq` and `/eq/hf|hg|hq|heq` shelf bands; buses/mains/mtx have
+  6 numbered bands, no shelf letters); dynamics attack/release are
+  `/dyn/att` / `/dyn/rel`; the HPF is `/flt/lc` (on) and `/flt/lcf` (freq),
+  not `preamp/hpf`; sends are `/send/<bus>/on` and `/send/<bus>/lvl`; main
+  assigns are `/main/<n>/on` and `/main/<n>/lvl`, distinct from bus sends.
+- **Gain is not a channel address.** A channel's input gain and
+  phantom/invert live on the physically patched I/O slot, not the channel
+  strip: read `/ch/<n>/in/conn/grp` and `/ch/<n>/in/conn/in` first, then
+  query `/io/in/<grp>/<in>/g` and `/io/in/<grp>/<in>/vph`. Implemented as a
+  second query pass (`captureChannelGains()` in dump-wing-state.mjs) since it
+  depends on the first pass's results — mirrors the existing DCA/mute-group
+  "read patch, then act" pattern already used elsewhere in the script.
+- **DCA and mute-group *membership* addresses are still unconfirmed** — the
+  user's source excerpt didn't cover that section. Left as-is
+  (`/ch/<n>/grp/dca/<n>`, `/ch/<n>/grp/mute/<n>`) with `TODO(church)`
+  comments rather than guessed at, per explicit instruction. Also still
+  unconfirmed and marked `TODO(church)`: aux/group bus count, matrix count,
+  DCA count, mute-group count, and all custom/user-key addresses.
+- **Wing OSC replies are 3-element arrays**
+  (`[displayString, normalizedFloat 0-1, rawValue]`), not the single-value
+  arrays the mock/tests/writes use — e.g. `/ch/1/mute` answers
+  `["1", 1, 1]`. Confirmed from the real dump. This silently broke
+  `plan-remap.mjs`'s truthy checks (`v[0]` on a 3-tuple reads the *display
+  string* "0"/"1", which is JS-truthy either way) and `apply-remap.mjs`'s
+  write/verify logic (which wrote/compared the full captured array instead
+  of one value). Fixed with a single `readValue(v)` helper in
+  wing-schema.mjs — prefers the last (raw) element for 3-tuples, passes
+  single-element arrays and non-arrays through unchanged — used everywhere
+  a captured reply needs interpreting (truthy checks, numeric comparison,
+  what to actually write to the destination on a copy).
+- **`LiveWing.applyTuning()` (src/wing/client.js) only ever targets
+  main/mtx outputs**, which have 6 numbered EQ bands and no low/high shelf
+  addressing. Design choice (not explicitly specified by the user): both
+  `peq` and `hshelf` filter types are written as plain numbered bands up to
+  a `MAX_EQ_BANDS = 6` cap; a filter beyond band 6 is skipped with a console
+  warning rather than silently dropped or erroring, since there's no
+  shelf-letter address to fall back to on these bus types.
+- **Regression tests added** (`test/dump-wing-state.test.js`) asserting the
+  exact corrected address strings for every field on `channelStrip`,
+  `busStrip`/`mainStrip`/`matrixStrip`, `mainStrip` numbering, and
+  `ioInputFields` — so this can't silently drift back to guessed addresses.
+  Also covers `readValue()`'s 3-tuple/single-element/non-array behavior.
+- **Could not re-verify coverage against the real console** — the church
+  dump on disk only recorded answers to the *old* (wrong) addresses; there's
+  no way to know what the new addresses would answer without a live query.
+  Per the user's own instruction, the next physical church visit should
+  re-run `2-DUMP-WING-STATE.bat`; ch/bus/mtx coverage should jump close to
+  100%, main/dca/mute-groups still need verification since those sections
+  weren't in the source excerpt used for this fix.
+
 ## 2026-07-10 — preflight fix (band-aware test tone)
 
 - **Bug (user-reported):** pre-flight used one fixed 1 kHz blip for every

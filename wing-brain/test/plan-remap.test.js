@@ -24,7 +24,7 @@ function makeDump(channelSpecs, { userKeys = [] } = {}) {
     const strip = channelStrip(index);
     const values = {};
     for (const addr of allAddresses(strip)) values[addr] = null;
-    values[`/ch/${index}/config/name`] = [name];
+    values[`/ch/${index}/name`] = [name];
     for (const busNum of dca) values[strip.dcaAssign.find((d) => d.dca === busNum).address] = [1];
     for (const g of muteGroups) values[strip.muteGroupAssign.find((m) => m.group === g).address] = [1];
     for (const s of sends) {

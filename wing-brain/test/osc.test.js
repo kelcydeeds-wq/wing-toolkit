@@ -197,13 +197,32 @@ test('LiveWing.applyTuning writes delay and one filter block per EQ band', async
     // float32 rounding error, so compare with tolerance, not exact equality.
     const close = (a, b) => Math.abs(a - b) < 1e-4;
     assert.ok(close(byAddress['/main/1/delay'], 12.5));
-    assert.equal(byAddress['/main/1/eq/1/type'], 'peq');
-    assert.ok(close(byAddress['/main/1/eq/1/f'], 100));
-    assert.ok(close(byAddress['/main/1/eq/1/g'], -3));
-    assert.ok(close(byAddress['/main/1/eq/1/q'], 1.4));
-    assert.equal(byAddress['/main/1/eq/1/on'], 1);
-    assert.equal(byAddress['/main/1/eq/2/type'], 'shv', 'hshelf maps to the shv filter type');
-    assert.equal(byAddress['/main/1/eq/2/f'], 6000);
+    assert.ok(close(byAddress['/main/1/eq/1f'], 100));
+    assert.ok(close(byAddress['/main/1/eq/1g'], -3));
+    assert.ok(close(byAddress['/main/1/eq/1q'], 1.4));
+    assert.ok(close(byAddress['/main/1/eq/2f'], 6000));
+    assert.ok(close(byAddress['/main/1/eq/2g'], -2));
+    assert.ok(close(byAddress['/main/1/eq/2q'], 0.7));
+    assert.equal(byAddress['/main/1/eq/on'], 1);
+  } finally {
+    wing.close(); srv.close();
+  }
+});
+
+test('LiveWing.applyTuning skips (and warns about) filters beyond the 6-band main/mtx EQ topology', async () => {
+  const srv = fakeConsole();
+  await srv.ready;
+  const wing = makeWing({ mode: 'live', wing: { host: '127.0.0.1', port: srv.boundPort() } });
+  try {
+    await wing.ready;
+    const output = { id: 'main_l', wing: { type: 'main', num: 1 } };
+    const filters = Array.from({ length: 7 }, (_, i) => ({ type: 'peq', freq: 100 + i, gainDb: -1, q: 1 }));
+    await wing.applyTuning(output, filters, 0);
+    await wait(100);
+
+    const addresses = srv.received.map((m) => m.address);
+    assert.ok(addresses.includes('/main/1/eq/6f'), 'band 6 (the last valid band) should be written');
+    assert.ok(!addresses.includes('/main/1/eq/7f'), 'band 7 has no address on this bus and must be skipped');
   } finally {
     wing.close(); srv.close();
   }

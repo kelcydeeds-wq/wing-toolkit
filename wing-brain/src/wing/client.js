@@ -8,11 +8,14 @@
 // scripts (dump-wing-state, apply-remap, the traffic recorder). This module
 // is just a thin, tune-shaped API on top of it.
 //
-// >>> LIVE OSC ADDRESSES ARE STUBBED. The Wing's output-section addresses will
-//     be confirmed from the state dump at the audit session; the mock console
-//     implements the same interface so everything upstream is testable now. <<<
+// Live OSC addresses confirmed against the official Wing OSC spec (church
+// visit 2026-07-10) -- see scripts/wing-schema.mjs for the full address map
+// and the reply-shape note. This module only ever targets main/mtx outputs,
+// which have 6 numbered EQ bands and no low/high shelf letters.
 
 import { makeOscTransport } from './osc.js';
+
+const MAX_EQ_BANDS = 6; // main/mtx: numbered bands only, no l/h shelf
 
 export function makeWing(config) {
   return config.mode === 'mock' ? new MockWing(config) : new LiveWing(config);
@@ -26,8 +29,7 @@ class LiveWing {
     this.ready = this.osc.ready;
   }
 
-  /** OSC path prefix for an output's Wing target (main bus vs matrix).
-   *  TODO(church): confirm both address schemes from the state dump. */
+  /** OSC path prefix for an output's Wing target (main bus vs matrix). */
   path(output) {
     const t = output.wing || {};
     return t.type === 'mtx' ? `/mtx/${t.num}` : `/main/${t.num}`;
@@ -53,16 +55,19 @@ class LiveWing {
   /** Apply recommended filters + delay to an output. Only called from Apply tap. */
   async applyTuning(output, filters, addDelayMs) {
     await this.ready;
-    // TODO(church): confirm EQ + delay OSC address scheme and value scaling
     this.osc.send(`${this.path(output)}/delay`, [addDelayMs]);
     filters.forEach((f, i) => {
-      const base = `${this.path(output)}/eq/${i + 1}`;
-      this.osc.send(`${base}/type`, [f.type === 'hshelf' ? 'shv' : 'peq']);
-      this.osc.send(`${base}/f`, [f.freq]);
-      this.osc.send(`${base}/g`, [f.gainDb]);
-      this.osc.send(`${base}/q`, [f.q]);
-      this.osc.send(`${base}/on`, [1]);
+      const band = i + 1;
+      if (band > MAX_EQ_BANDS) {
+        console.warn(`[wing] ${output.id}: filter #${band} has no EQ band on this bus (max ${MAX_EQ_BANDS}) -- skipped: ${f.freq} Hz`);
+        return;
+      }
+      const base = `${this.path(output)}/eq`;
+      this.osc.send(`${base}/${band}f`, [f.freq]);
+      this.osc.send(`${base}/${band}g`, [f.gainDb]);
+      this.osc.send(`${base}/${band}q`, [f.q]);
     });
+    this.osc.send(`${this.path(output)}/eq/on`, [1]);
   }
 
   close() { this.osc.close(); }

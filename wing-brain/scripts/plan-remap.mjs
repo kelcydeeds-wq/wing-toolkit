@@ -21,7 +21,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { channelStrip } from './wing-schema.mjs';
+import { channelStrip, readValue } from './wing-schema.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
@@ -50,8 +50,6 @@ export function classify(name) {
   return null;
 }
 
-function firstValue(v) { return Array.isArray(v) ? v[0] : null; }
-
 /** Assign a category's channels to a target range, minimizing moves: keep
  *  any channel already inside the range where it is, only relocate the ones
  *  that are currently outside it. */
@@ -78,14 +76,14 @@ function chaseReferences(dump, channelIndex) {
   const chanDump = dump.channels.find((c) => c.index === channelIndex);
   const values = chanDump ? chanDump.values : {};
 
-  const dca = strip.dcaAssign.filter((d) => firstValue(values[d.address])).map((d) => d.dca);
-  const muteGroups = strip.muteGroupAssign.filter((g) => firstValue(values[g.address])).map((g) => g.group);
+  const dca = strip.dcaAssign.filter((d) => readValue(values[d.address])).map((d) => d.dca);
+  const muteGroups = strip.muteGroupAssign.filter((g) => readValue(values[g.address])).map((g) => g.group);
   const sends = strip.sends
-    .filter((s) => firstValue(values[s.on]))
-    .map((s) => ({ bus: s.bus, level: firstValue(values[s.level]) }));
+    .filter((s) => readValue(values[s.on]))
+    .map((s) => ({ bus: s.bus, level: readValue(values[s.level]) }));
   const userKeys = (dump.userKeys || [])
     .filter((uk) => {
-      const target = firstValue(uk.values[`${uk.path}/target`]);
+      const target = readValue(uk.values[`${uk.path}/target`]);
       return typeof target === 'string' && target.includes(`/ch/${channelIndex}/`);
     })
     .map((uk) => uk.index);
@@ -99,7 +97,7 @@ function chaseReferences(dump, channelIndex) {
  */
 export function buildRemapPlan(dump, targetLayout) {
   const named = dump.channels
-    .map((c) => ({ index: c.index, name: firstValue(c.values[`/ch/${c.index}/config/name`]) }))
+    .map((c) => ({ index: c.index, name: readValue(c.values[`/ch/${c.index}/name`]) }))
     .filter((c) => typeof c.name === 'string' && c.name.trim().length > 0);
 
   const byLabel = new Map(targetLayout.ranges.map((r) => [r.label, []]));

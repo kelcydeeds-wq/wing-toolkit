@@ -23,9 +23,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { makeOscTransport } from '../src/wing/osc.js';
 import {
-  CHANNEL_COUNT, BUS_COUNT, MATRIX_COUNT, DCA_COUNT,
+  CHANNEL_COUNT, BUS_COUNT, MAIN_COUNT, MATRIX_COUNT, DCA_COUNT,
   channelStrip, busStrip, mainStrip, matrixStrip, dcaStrip, userKeyStrip,
-  leafAddresses
+  leafAddresses, ioInputFields, readValue
 } from './wing-schema.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -81,11 +81,35 @@ function buildStrips() {
   return [
     ...Array.from({ length: CHANNEL_COUNT }, (_, i) => channelStrip(i + 1)),
     ...Array.from({ length: BUS_COUNT }, (_, i) => busStrip(i + 1)),
-    mainStrip('lr'),
+    ...Array.from({ length: MAIN_COUNT }, (_, i) => mainStrip(i + 1)),
     ...Array.from({ length: MATRIX_COUNT }, (_, i) => matrixStrip(i + 1)),
     ...Array.from({ length: DCA_COUNT }, (_, i) => dcaStrip(i + 1)),
     ...Array.from({ length: USER_KEY_COUNT }, (_, i) => userKeyStrip(i + 1))
   ];
+}
+
+/**
+ * Channel gain isn't a channel address -- it lives on the physically patched
+ * input. For every channel whose sourceGrp/sourceIn answered, build and
+ * query the /io/in/<grp>/<in>/... addresses and merge the results into that
+ * channel's values map. Second pass because it depends on the first pass's
+ * results.
+ */
+async function captureChannelGains(transport, results, { timeoutMs, concurrency }) {
+  const tasks = [];
+  for (const strip of results) {
+    if (strip.kind !== 'channel') continue;
+    const grp = readValue(strip.values[`${strip.path}/in/conn/grp`]);
+    const inNum = readValue(strip.values[`${strip.path}/in/conn/in`]);
+    if (grp === null || grp === undefined || inNum === null || inNum === undefined) continue;
+    const io = ioInputFields(grp, inNum);
+    tasks.push({ strip, io });
+  }
+  await mapWithConcurrency(tasks, concurrency, async ({ strip, io }) => {
+    strip.values[io.gain] = await transport.get(io.gain, { timeoutMs });
+    strip.values[io.phantomInvert] = await transport.get(io.phantomInvert, { timeoutMs });
+  });
+  return tasks.length;
 }
 
 /** Query every address across every strip with bounded concurrency. */
@@ -128,13 +152,19 @@ export function seedMockConsole(transport) {
     35: 'Choir Mic 1', 36: 'Choir Mic 2',
     39: 'Oscillator', 40: 'Talkback'
   };
+  let slot = 1; // fake physical input slot per named channel, group "A"
   for (const [ch, name] of Object.entries(namedChannels)) {
-    set(`/ch/${ch}/config/name`, name);
-    set(`/ch/${ch}/preamp/gain`, 30 + (Number(ch) % 10));
-    set(`/ch/${ch}/fader`, -6);
+    set(`/ch/${ch}/name`, name);
+    set(`/ch/${ch}/fdr`, -6);
     set(`/ch/${ch}/mute`, 0);
-    set(`/ch/${ch}/preamp/hpf/on`, 1);
-    set(`/ch/${ch}/preamp/hpf/f`, 80);
+    set(`/ch/${ch}/flt/lc`, 1);
+    set(`/ch/${ch}/flt/lcf`, 80);
+    // Gain lives on the patched input, not the channel -- patch each named
+    // channel to group A, a distinct input slot, then seed that slot's gain.
+    set(`/ch/${ch}/in/conn/grp`, 'A');
+    set(`/ch/${ch}/in/conn/in`, slot);
+    set(`/io/in/A/${slot}/g`, 30 + (Number(ch) % 10));
+    slot++;
   }
 
   // DCA + mute group assignments -- these must move with a channel on remap.
@@ -143,18 +173,21 @@ export function seedMockConsole(transport) {
   set('/ch/2/grp/mute/1', 1);
 
   // Bus sends -- also downstream references a remap must chase.
-  set('/bus/1/config/name', 'Vox Reverb');
-  set('/bus/2/config/name', 'Drum Monitor');
-  set('/ch/1/mix/1/on', 1); set('/ch/1/mix/1/level', -10);
-  set('/ch/30/mix/1/on', 1); set('/ch/30/mix/1/level', -8);
-  set('/ch/17/mix/2/on', 1); set('/ch/17/mix/2/level', -4);
+  set('/bus/1/name', 'Vox Reverb');
+  set('/bus/2/name', 'Drum Monitor');
+  set('/ch/1/send/1/on', 1); set('/ch/1/send/1/lvl', -10);
+  set('/ch/30/send/1/on', 1); set('/ch/30/send/1/lvl', -8);
+  set('/ch/17/send/2/on', 1); set('/ch/17/send/2/lvl', -4);
 
-  set('/main/lr/config/name', 'Main LR');
-  set('/main/lr/fader', 0);
-  set('/main/lr/mute', 0);
+  set('/main/1/name', 'Main L');
+  set('/main/1/fdr', 0);
+  set('/main/1/mute', 0);
+  set('/main/2/name', 'Main R');
+  set('/main/2/fdr', 0);
+  set('/main/2/mute', 0);
 
-  set('/dca/1/config/name', 'Vox FX');
-  set('/dca/2/config/name', 'Band');
+  set('/dca/1/name', 'Vox FX');
+  set('/dca/2/name', 'Band');
 }
 
 function defaultOutPath(mock) {
@@ -178,6 +211,9 @@ export async function dumpWingState(args) {
     process.stdout.write(`\r  ${done}/${total} addresses queried`);
   });
   process.stdout.write('\n');
+
+  const gainTasks = await captureChannelGains(transport, results, args);
+  if (gainTasks) console.log(`  queried input gain for ${gainTasks} patched channel(s) via /io/in/<grp>/<in>`);
   transport.close();
 
   const dump = {
