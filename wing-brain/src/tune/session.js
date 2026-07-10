@@ -78,11 +78,27 @@ export class TuneSession {
     this.captureSeconds = s.seconds + s.padSeconds;
 
     const pf = config.audio.preflight || {};
-    this.blip = makeBlip({
-      freq: pf.blipFreq ?? 1000, seconds: pf.blipSeconds ?? 1,
-      sampleRate: config.audio.sampleRate, levelDbfs: s.levelDbfs
+    this.blipSeconds = pf.blipSeconds ?? 1;
+    this.blipLevelDbfs = s.levelDbfs;
+    this.blipCaptureSeconds = pf.captureSeconds ?? (this.blipSeconds + 0.4);
+  }
+
+  /**
+   * Build a pre-flight test tone centered inside an output's configured
+   * band, not a fixed broadband frequency — a sub (e.g. band [25, 120]) will
+   * never pass a generic 1 kHz blip, that's the crossover doing its job, not
+   * a routing failure. Frequency is the band's geometric mean, nudged in
+   * from the edges so a steep filter right at the crossover point doesn't
+   * attenuate the tone.
+   */
+  blipForOutput(output) {
+    const [lo, hi] = output.band || [20, 20000];
+    const mid = Math.sqrt(lo * hi);
+    const freq = Math.min(Math.max(mid, lo * 1.2), hi * 0.8);
+    return makeBlip({
+      freq, seconds: this.blipSeconds,
+      sampleRate: this.cfg.audio.sampleRate, levelDbfs: this.blipLevelDbfs
     });
-    this.blipCaptureSeconds = pf.captureSeconds ?? ((pf.blipSeconds ?? 1) + 0.4);
   }
 
   snapshot() {
@@ -237,13 +253,14 @@ export class TuneSession {
         await this.wing.soloOutput(output.id, this.cfg.outputs);
         await pause(300);
 
-        const blip = scaleBuffer(this.blip, output.sweepTrimDb);
+        const blip = scaleBuffer(this.blipForOutput(output), output.sweepTrimDb);
         const { mic } = await this.audio.playAndCapture(blip, this.blipCaptureSeconds);
         const peak = Math.round(peakDbfs(mic) * 10) / 10;
         const snrDb = estimateSnrDb(mic, this.cfg.audio.sampleRate);
-        const pass = peak >= minPeak && snrDb >= minSnr;
+        const clipped = isClipped(mic);
+        const pass = peak >= minPeak && !clipped && snrDb >= minSnr;
 
-        const result = { outputId: output.id, label: output.label, pass, peakDbfs: peak, snrDb, status: pass ? 'pass' : 'fail' };
+        const result = { outputId: output.id, label: output.label, pass, peakDbfs: peak, snrDb, clipped, status: pass ? 'pass' : 'fail' };
         this.preflightResults.push(result);
         this.emit('preflight_progress', result);
       }
@@ -252,11 +269,19 @@ export class TuneSession {
       this.state = 'idle';
       this.emit('session', this.snapshot());
       const failed = this.preflightResults.filter((r) => !r.pass);
-      if (failed.length) {
+      const clipped = failed.filter((r) => r.clipped);
+      const noSignal = failed.filter((r) => !r.clipped);
+      if (clipped.length) {
         this.emit('warning', {
-          message: `Pre-flight: ${failed.map((f) => f.label).join(', ')} returned no usable signal — check routing/amp/patch before starting a full tune.`
+          message: `Pre-flight: ${clipped.map((f) => f.label).join(', ')} clipped — mic input near/above 0 dBFS. Lower the amp trim or preamp gain before starting a full tune.`
         });
-      } else if (this.preflightResults.length) {
+      }
+      if (noSignal.length) {
+        this.emit('warning', {
+          message: `Pre-flight: ${noSignal.map((f) => f.label).join(', ')} returned no usable signal — check routing/amp/patch before starting a full tune.`
+        });
+      }
+      if (!failed.length && this.preflightResults.length) {
         this.emit('info', { message: `Pre-flight OK — all ${this.preflightResults.length} outputs returned signal.` });
       }
     }

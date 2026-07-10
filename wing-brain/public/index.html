@@ -172,10 +172,11 @@ function show(id){
   $(id).classList.remove('hidden');
 }
 
-function preflightRow({ label, status, pass, peakDbfs, snrDb }){
+function preflightRow({ label, status, pass, peakDbfs, snrDb, clipped }){
   const cls = status === 'testing' ? '' : (pass ? 'ok' : 'warn');
+  const reason = clipped ? 'CLIPPED' : 'NO SIGNAL';
   const detail = status === 'testing' ? 'testing…'
-    : `${pass ? 'OK' : 'NO SIGNAL'} · peak ${peakDbfs} dBFS · SNR ${snrDb} dB`;
+    : `${pass ? 'OK' : reason} · peak ${peakDbfs} dBFS · SNR ${snrDb} dB`;
   return `<li class="${cls}"><span>${label}</span><span>${detail}</span></li>`;
 }
 

@@ -3,6 +3,33 @@
 Running log of judgment calls made during autonomous work runs, so they can be
 reviewed and reversed if wrong.
 
+## 2026-07-10 — preflight fix (band-aware test tone)
+
+- **Bug (user-reported):** pre-flight used one fixed 1 kHz blip for every
+  output, including the sub (`band: [25, 120]`) — a sub can't reproduce
+  1 kHz, so it read as no-signal regardless of whether it was actually
+  working. Fixed: `blipForOutput()` now centers the test tone on each
+  output's configured band (geometric mean of `[lo, hi]`, nudged in from the
+  edges) instead of a single broadband frequency.
+- **Second bug this uncovered:** `preflightCheck`'s pass criteria only had a
+  *lower* bound on peak level (`peak >= minPeakDbfs`) — nothing caught a
+  reading above 0 dBFS, which is physically meaningless (digital full scale)
+  and should always fail, not pass. Surfaced because the sub's new in-band
+  tone (~55 Hz) lands almost exactly on the mock room model's synthetic
+  55 Hz resonance (`addResonance` in `src/audio/io.js`); driving it with a
+  full second of sustained tone at that exact frequency rings the (linearly
+  undamped) synthetic resonance up to ~28 dBFS. Fixed by reusing `isClipped()`
+  in the pass check — `pass = peak >= minPeak && !clipped && snr >= minSnr` —
+  and split the failure warning into a "clipped" message vs. a "no signal"
+  message, since they're different actionable problems for an operator
+  (turn down the trim, vs. check routing/patch).
+- **Left the mock's resonance model as-is** rather than damping it to behave
+  more realistically under sustained excitation — that risks changing
+  Full-Tune's sweep-based measurements too (a different, brief signal), for
+  a problem that only exists because the preflight tone (new, sustained,
+  1 second) can land squarely on a synthetic mode. The clip check is the
+  correct fix regardless of why a peak comes back nonsensical.
+
 ## 2026-07-08 — refinement run (Parts A + B)
 
 - **CLAUDE.md and AI_MIX_MASTER_BUILD_PLAN.md do not exist** in this repo (only

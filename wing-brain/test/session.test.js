@@ -243,6 +243,43 @@ test('preflightCheck flags a specific output with no return signal', async () =>
   assert.ok(log.some((e) => e.event === 'warning' && /returned no usable signal/.test(e.payload.message)));
 });
 
+test('blipForOutput picks a test tone inside the output\'s configured band, not a fixed broadband frequency', () => {
+  const session = newSession({ config, room, audio: fakeWing(), wing: fakeWing(), emit: () => {} });
+  for (const output of config.outputs) {
+    const [lo, hi] = output.band;
+    const blip = session.blipForOutput(output);
+    // Recover the tone's dominant frequency via a zero-crossing count over
+    // a clean stretch of the (windowed) blip, rather than re-deriving the
+    // exact formula blipForOutput uses internally.
+    let crossings = 0;
+    for (let i = 1; i < blip.length; i++) {
+      if (blip[i - 1] <= 0 && blip[i] > 0) crossings++;
+    }
+    const freq = crossings / (blip.length / sr);
+    assert.ok(freq > lo && freq < hi, `${output.id}: test tone ${freq.toFixed(0)} Hz should sit inside band [${lo}, ${hi}]`);
+  }
+});
+
+test('preflightCheck fails a clipped capture even though its peak clears minPeakDbfs', async () => {
+  const audio = {
+    setScenario: () => {},
+    playAndCapture: async (blip, captureSeconds) => {
+      const mic = echoCapture(blip, captureSeconds, 50); // absurd gain -> clipped, like the sub-resonance bug
+      return { ref: blip, mic };
+    }
+  };
+  const oneOutputCfg = { ...config, outputs: [config.outputs[0]] };
+  const { log, emit } = collectEvents();
+  const session = newSession({ config: oneOutputCfg, room, audio, wing: fakeWing(), emit });
+
+  await session.preflightCheck();
+
+  const result = session.preflightResults[0];
+  assert.equal(result.clipped, true);
+  assert.equal(result.pass, false, 'a clipped reading must not be reported as a pass, regardless of peak level');
+  assert.ok(log.some((e) => e.event === 'warning' && /clipped/.test(e.payload.message)));
+});
+
 test('preflightCheck refuses to run while a session is already in progress', async () => {
   const audio = { playAndCapture: async () => cleanCapture(20) };
   const oneOutputCfg = { ...config, outputs: [config.outputs[0]] };
