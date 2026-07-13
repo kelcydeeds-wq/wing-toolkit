@@ -3,6 +3,87 @@
 Running log of judgment calls made during autonomous work runs, so they can be
 reviewed and reversed if wrong.
 
+## 2026-07-13 — Claude judgment layer on the loudness monitor
+
+- **New `src/audio/loudness-advisor.js`**, mirroring `tune/advisor.js`'s
+  division of labor exactly: code measures and always fires the raw alert;
+  Claude only annotates, a few seconds later, why the trend probably looks
+  the way it does. `LoudnessMonitor` never awaits it — `pushFrame()` stays
+  fully synchronous, kicks off the Claude call as a fire-and-forget promise,
+  and returns immediately. **Explicit requirement, verified by a test**:
+  a genuinely over-target reading stays WARN/ALERT even when Claude reads it
+  as "dynamics, ignore" — the annotation decorates the transition record, it
+  never touches `classifier.status`.
+- **Event-driven, one call per alert episode** — triggered only on the
+  `changed && (WARN||ALERT)` edge from `LevelClassifier.update()`, which
+  already had a natural rate limit (`sustainedSeconds` between any two
+  possible re-fires of the same margin) — no extra throttling needed.
+  `LevelClassifier.update()` gained a third return field, `sinceSeconds`
+  (how long the *current* status has held), used to report
+  `overageDurationSec` in the payload — additive change, every existing
+  caller destructuring `{status, changed}` is unaffected.
+- **Haiku, not Sonnet** — `loudness-advisor.js` uses `claude-haiku-4-5`, a
+  separate model constant from `tune/advisor.js`'s Sonnet, per explicit
+  instruction that this is a cheap classification task, not tuning
+  judgment. Same key (`ANTHROPIC_API_KEY`), same request/parse/catch
+  shape, same "missing key → null, never throws" contract.
+- **Fire-and-forget bookkeeping**: `_maybeRequestRead()` captures a direct
+  object reference to the transition record (not an index into
+  `this.transitions`) before kicking off the promise chain, so the
+  eventual `.then()` mutates the right object even if `_resetRecord()`
+  (4-hour auto-rotation) has since replaced the array it lived in. Pending
+  promises are tracked in a `Set` with a `waitForPendingReads()` test-only
+  drain method — production code never calls it; tests need it because the
+  chain is genuinely async (`Promise.resolve().then(...)`) and asserting on
+  `calls.length` immediately after `pushFrame()` would be asserting on a
+  microtask that hasn't run yet (caught by two tests failing this exact way
+  on first write — see below).
+- **A read that never resolved before `stop()` saves the record shows up as
+  `alertReadCounts.unavailable`**, same bucket as a genuine API failure —
+  there's currently no way to tell "Claude was still thinking" from "the key
+  was missing" from the persisted record alone. Accepted as a minor
+  reporting gap rather than making `stop()` async to await in-flight reads
+  before persisting; `stop()`'s synchronous contract (server.js calls it
+  bare in `buildRuntime()`, tests call it bare) was judged more valuable
+  than that last bit of report precision. Revisit if "unavailable" shows up
+  often enough in practice to be confusing on the Monday report.
+- **UI note line clears on ANY status transition**, not just a return to
+  ok/quiet — a fresh warn→alert escalation also wipes the old "probably
+  dynamics" note rather than leaving it visible next to a now-red meter.
+  Simple rule (`status !== lastLoudnessStatus`), and `renderLoudnessNote()`
+  additionally drops a `loudnessRead` payload if the meter has already
+  moved past the status the payload was about — a stale note arriving late
+  is worse than no note.
+- **Test-writing mistake caught before it shipped**: two new tests
+  (checking `calls.length` and a manually-resolved promise reference)
+  asserted on the Claude call's side effects *synchronously*, right after
+  the `pushFrame()` loop that triggers it — but the trigger itself defers
+  to a microtask (`Promise.resolve().then(...)`), so those assertions ran
+  before the stub had even been called. Both failed with the state they'd
+  have *before* the async work happens (`calls.length === 0`, an unassigned
+  resolver function). Fixed by awaiting `waitForPendingReads()` (or gating
+  the stub on an explicit `Promise` instead of hoping a resolver variable
+  is assigned in time) before asserting. Distinct from and unrelated to the
+  `dataDir` test-pollution mistake logged in the 2026-07-10 entry below —
+  worth naming because "the async thing didn't happen yet" is a different
+  failure shape than "the async thing wrote to the wrong place," and both
+  are easy to reintroduce in a fire-and-forget design like this one.
+- **Test-writing mistake #2**: two other tests alternated `pushFrame()`
+  calls between two different dB levels (e.g. 93 then 97, or 93 then 60)
+  under the *default* 10-second LEQ window. Since the rolling LEQ blends
+  energy across whatever chunks are still inside that window, consecutive
+  1-second frames at different levels don't produce the discrete level
+  jumps the tests assumed — the reported level was a smeared average of
+  old and new chunks for several frames after a "transition." Fixed by
+  overriding `integrationWindow: 'LEQ1'` in those two tests specifically,
+  which (combined with 1-second frames) makes each frame's LEQ reading
+  equal to just that frame's own level, restoring the simple hand-computed
+  frame-count math. Every other test in this suite uses a single constant
+  level throughout its frame loop, where blending is a non-issue (the
+  average of N identical values is that value) — this only bites tests
+  that intentionally change level mid-stream, worth remembering for any
+  future test that does the same.
+
 ## 2026-07-10 — live loudness monitor (continuous LEQ, independent of tune sessions)
 
 - **New module `src/audio/loudness-monitor.js`**, deliberately NOT touching

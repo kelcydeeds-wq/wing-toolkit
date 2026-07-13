@@ -293,3 +293,213 @@ test('LoudnessMonitor.stop() before any frame is pushed does not write a record'
   monitor.stop();
   assert.deepEqual(listLoudnessHistory(tmp), []);
 });
+
+/* ------------------------- Claude annotation layer -------------------------- */
+// Event-driven: one call per alert EPISODE (a sustained-threshold transition
+// into warn/alert), never per frame/second. Entirely fire-and-forget --
+// pushFrame() must return before the (stubbed) Claude call resolves, proving
+// the raw alert is never delayed by this layer.
+
+function overFrame(db, n = 1000) {
+  return new Float64Array(n).fill(Math.pow(10, db / 20));
+}
+
+test('a sustained warn transition triggers exactly one claudeReadFn call with a well-shaped payload', async () => {
+  const calls = [];
+  const claudeReadFn = async (payload) => { calls.push(payload); return { read: 'dynamics', note: 'Looks like a chorus peak.', confidence: 'medium' }; };
+  const monitor = new LoudnessMonitor({ config: baseConfig(), room: {}, emit: () => {}, dataDir: tmpDataDir(), claudeReadFn });
+  monitor.start();
+  try {
+    for (let i = 0; i < 4; i++) monitor.pushFrame(overFrame(93)); // sustainedSeconds=2, over soft margin (92)
+    // The trigger itself is synchronous (queued inside pushFrame), but the
+    // stubbed claudeReadFn call is deferred to a microtask -- wait for it
+    // before inspecting `calls`, exactly like production code never does.
+    await monitor.waitForPendingReads();
+    assert.equal(calls.length, 1, 'exactly one call for the whole sustained episode, not one per frame');
+    const p = calls[0];
+    assert.equal(p.marginState, 'amber');
+    assert.equal(p.targetDb, 90);
+    assert.ok(p.currentDb >= 90);
+    assert.ok(p.overageDurationSec >= 0);
+    assert.ok(Array.isArray(p.recentTrend));
+    assert.equal(p.currentSongLabel, null);
+  } finally {
+    monitor.stop();
+  }
+});
+
+test('pushFrame returns before the Claude call resolves — the raw alert is never delayed', async () => {
+  let releaseClaudeCall;
+  const gate = new Promise((r) => { releaseClaudeCall = r; });
+  const claudeReadFn = async () => { await gate; return { read: 'dynamics', note: 'fine', confidence: 'low' }; };
+  const monitor = new LoudnessMonitor({ config: baseConfig(), room: {}, emit: () => {}, dataDir: tmpDataDir(), claudeReadFn });
+  monitor.start();
+  try {
+    let lastResult;
+    for (let i = 0; i < 4; i++) lastResult = monitor.pushFrame(overFrame(93));
+    // The transition already happened and was returned synchronously...
+    assert.equal(lastResult.status, STATUS.WARN);
+    // ...while the Claude call is still gated shut (deliberately unresolved).
+    const transition = monitor.transitions.find((t) => t.status === STATUS.WARN);
+    assert.equal(transition.claudeRead, undefined, 'no annotation yet — the call has not resolved');
+    releaseClaudeCall();
+    await monitor.waitForPendingReads();
+    assert.deepEqual(transition.claudeRead, { read: 'dynamics', note: 'fine', confidence: 'low' });
+  } finally {
+    monitor.stop();
+  }
+});
+
+test('a claudeReadFn failure resolves to claudeRead: null and never throws', async () => {
+  const claudeReadFn = async () => { throw new Error('network blip'); };
+  const events = [];
+  const monitor = new LoudnessMonitor({ config: baseConfig(), room: {}, emit: (e, p) => events.push([e, p]), dataDir: tmpDataDir(), claudeReadFn });
+  monitor.start();
+  try {
+    for (let i = 0; i < 4; i++) monitor.pushFrame(overFrame(93));
+    await monitor.waitForPendingReads();
+    const transition = monitor.transitions.find((t) => t.status === STATUS.WARN);
+    assert.equal(transition.claudeRead, null);
+    assert.ok(!events.some(([e]) => e === 'loudnessRead'), 'no annotation event fired on failure');
+  } finally {
+    monitor.stop();
+  }
+});
+
+test('emits a loudnessRead event only when a real annotation comes back', async () => {
+  const claudeReadFn = async () => ({ read: 'ramp', note: 'Climbing steadily for a while.', confidence: 'high' });
+  const events = [];
+  const monitor = new LoudnessMonitor({ config: baseConfig(), room: {}, emit: (e, p) => events.push([e, p]), dataDir: tmpDataDir(), claudeReadFn });
+  monitor.start();
+  try {
+    for (let i = 0; i < 4; i++) monitor.pushFrame(overFrame(93));
+    await monitor.waitForPendingReads();
+    const read = events.find(([e]) => e === 'loudnessRead');
+    assert.ok(read, 'loudnessRead event should have fired');
+    assert.equal(read[1].status, STATUS.WARN);
+    assert.equal(read[1].read, 'ramp');
+    assert.equal(read[1].note, 'Climbing steadily for a while.');
+  } finally {
+    monitor.stop();
+  }
+});
+
+test('does not trigger a Claude call on frames that keep the same status (no re-fire per frame)', async () => {
+  let callCount = 0;
+  const claudeReadFn = async () => { callCount++; return { read: 'dynamics', note: 'ok', confidence: 'low' }; };
+  const monitor = new LoudnessMonitor({ config: baseConfig(), room: {}, emit: () => {}, dataDir: tmpDataDir(), claudeReadFn });
+  monitor.start();
+  try {
+    for (let i = 0; i < 4; i++) monitor.pushFrame(overFrame(93)); // enters WARN once
+    for (let i = 0; i < 4; i++) monitor.pushFrame(overFrame(93)); // stays WARN
+    await monitor.waitForPendingReads();
+    assert.equal(callCount, 1);
+  } finally {
+    monitor.stop();
+  }
+});
+
+test('does not trigger a Claude call for OK or QUIET transitions, only warn/alert', async () => {
+  let callCount = 0;
+  const claudeReadFn = async () => { callCount++; return { read: 'dynamics', note: 'ok', confidence: 'low' }; };
+  const monitor = new LoudnessMonitor({ config: baseConfig(), room: {}, emit: () => {}, dataDir: tmpDataDir(), claudeReadFn });
+  monitor.start();
+  try {
+    monitor.pushFrame(overFrame(60)); // well under target, no alert
+    monitor.pushFrame(overFrame(60));
+    await monitor.waitForPendingReads();
+    assert.equal(callCount, 0);
+  } finally {
+    monitor.stop();
+  }
+});
+
+test('escalating from warn to alert fires a second Claude call for the new episode', async () => {
+  let callCount = 0;
+  const claudeReadFn = async () => { callCount++; return { read: 'drift', note: 'holding hot', confidence: 'high' }; };
+  // LEQ1: a 1s rolling window on 1s frames means each frame's LEQ is
+  // effectively just that frame's own level (the prior frame ages out
+  // before the next is read) -- otherwise the default LEQ10 window would
+  // blend the 93 and 97 dB frames together into one smeared average and
+  // the hard-margin crossing would never cleanly happen within this test.
+  const cfg = baseConfig({ integrationWindow: 'LEQ1' });
+  const monitor = new LoudnessMonitor({ config: cfg, room: {}, emit: () => {}, dataDir: tmpDataDir(), claudeReadFn });
+  monitor.start();
+  try {
+    // sustainedSeconds=2 with 1s frames needs 3 consecutive over-margin
+    // frames to fire (elapsedSeconds - since >= 2 first holds on the 3rd).
+    for (let i = 0; i < 3; i++) monitor.pushFrame(overFrame(93)); // -> WARN
+    for (let i = 0; i < 3; i++) monitor.pushFrame(overFrame(97)); // -> ALERT (hard margin, its own fresh timer)
+    await monitor.waitForPendingReads();
+    assert.equal(callCount, 2, 'warn and alert are separate episodes, each gets its own read');
+  } finally {
+    monitor.stop();
+  }
+});
+
+test('buildRecord tallies alertReadCounts per episode, including unavailable reads', async () => {
+  const tmp = tmpDataDir();
+  let n = 0;
+  const reads = ['dynamics', 'dynamics', null]; // null simulates a failed/unavailable call
+  const claudeReadFn = async () => {
+    const r = reads[n++];
+    return r ? { read: r, note: 'x', confidence: 'low' } : null;
+  };
+  // Short window + short sustain so each 93/60 dB frame reads cleanly
+  // (see the comment in the escalation test above for why LEQ1 matters
+  // whenever a test alternates levels within what would otherwise be one
+  // blended LEQ10 window).
+  const cfg = baseConfig({ sustainedSeconds: 1, integrationWindow: 'LEQ1' });
+  const monitor = new LoudnessMonitor({ config: cfg, room: {}, emit: () => {}, dataDir: tmp, claudeReadFn });
+  monitor.start();
+  try {
+    // Episode 1: warn
+    for (let i = 0; i < 2; i++) monitor.pushFrame(overFrame(93));
+    // Back to ok
+    for (let i = 0; i < 2; i++) monitor.pushFrame(overFrame(60));
+    // Episode 2: warn again
+    for (let i = 0; i < 2; i++) monitor.pushFrame(overFrame(93));
+    // Back to ok
+    for (let i = 0; i < 2; i++) monitor.pushFrame(overFrame(60));
+    // Episode 3: warn again, this one fails
+    for (let i = 0; i < 2; i++) monitor.pushFrame(overFrame(93));
+    await monitor.waitForPendingReads();
+
+    const rec = monitor.buildRecord();
+    assert.deepEqual(rec.alertReadCounts, { dynamics: 2, unavailable: 1 });
+  } finally {
+    monitor.stop();
+  }
+});
+
+test('getSongContext is threaded into the payload when provided', async () => {
+  const calls = [];
+  const claudeReadFn = async (payload) => { calls.push(payload); return null; };
+  const getSongContext = () => ({ currentSongLabel: 'Way Maker', isWorshipSection: true });
+  const monitor = new LoudnessMonitor({
+    config: baseConfig(), room: {}, emit: () => {}, dataDir: tmpDataDir(), claudeReadFn, getSongContext
+  });
+  monitor.start();
+  try {
+    for (let i = 0; i < 4; i++) monitor.pushFrame(overFrame(93));
+    await monitor.waitForPendingReads();
+    assert.equal(calls[0].currentSongLabel, 'Way Maker');
+    assert.equal(calls[0].isWorshipSection, true);
+  } finally {
+    monitor.stop();
+  }
+});
+
+test('a genuinely over-target reading still reports WARN/ALERT status even when Claude reads it as dynamics — the annotation never overrules the measurement', async () => {
+  const claudeReadFn = async () => ({ read: 'dynamics', note: 'probably just a big chorus, ignore', confidence: 'high' });
+  const monitor = new LoudnessMonitor({ config: baseConfig(), room: {}, emit: () => {}, dataDir: tmpDataDir(), claudeReadFn });
+  monitor.start();
+  try {
+    let last;
+    for (let i = 0; i < 4; i++) last = monitor.pushFrame(overFrame(93));
+    await monitor.waitForPendingReads();
+    assert.equal(last.status, STATUS.WARN, 'status stays WARN regardless of what Claude annotates it with');
+  } finally {
+    monitor.stop();
+  }
+});

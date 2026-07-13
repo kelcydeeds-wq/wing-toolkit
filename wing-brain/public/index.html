@@ -111,13 +111,16 @@
   .grid2{display:grid; grid-template-columns:1fr 1fr; gap:4px 16px}
 
   /* --- loudness meter: glanceable, not a graph --- */
-  #loudnessMeter{display:flex; align-items:center; gap:10px; border-radius:10px;
-    padding:8px 12px; margin:-6px 0 14px; border:1px solid var(--line); background:var(--panel)}
+  #loudnessMeter{border-radius:10px; padding:8px 12px; margin:-6px 0 14px;
+    border:1px solid var(--line); background:var(--panel)}
+  #loudnessMeter .lm-row{display:flex; align-items:center; gap:10px}
   #loudnessMeter .lm-num{font-size:15px; font-weight:700; font-variant-numeric:tabular-nums; min-width:64px}
   #loudnessMeter .lm-label{font-size:11px; color:var(--dim); letter-spacing:.06em; text-transform:uppercase}
   #loudnessMeter .lm-bar{flex:1; height:8px; border-radius:99px; background:var(--panel2); position:relative; overflow:hidden}
   #loudnessMeter .lm-fill{position:absolute; left:0; top:0; bottom:0; border-radius:99px; transition:width .3s}
   #loudnessMeter .lm-target{position:absolute; top:-2px; bottom:-2px; width:2px; background:var(--ink); opacity:.6}
+  #loudnessMeter .lm-note{font-size:12px; color:var(--dim); margin:6px 0 0; min-height:15px}
+  #loudnessMeter .lm-note:empty{margin:0}
   #loudnessMeter.lm-ok .lm-fill{background:var(--green)}
   #loudnessMeter.lm-quiet .lm-fill{background:var(--blue)}
   #loudnessMeter.lm-warn{border-color:var(--amber)}
@@ -151,9 +154,12 @@
 
   <div id="wingBanner" class="hidden"></div>
   <div id="loudnessMeter" class="hidden">
-    <span class="lm-label">SPL</span>
-    <span class="lm-num" id="lmNum">—</span>
-    <div class="lm-bar"><div class="lm-fill" id="lmFill" style="width:0%"></div><div class="lm-target" id="lmTargetMark" style="left:0%"></div></div>
+    <div class="lm-row">
+      <span class="lm-label">SPL</span>
+      <span class="lm-num" id="lmNum">—</span>
+      <div class="lm-bar"><div class="lm-fill" id="lmFill" style="width:0%"></div><div class="lm-target" id="lmTargetMark" style="left:0%"></div></div>
+    </div>
+    <p class="lm-note" id="lmNote"></p>
   </div>
 
   <!-- HOME -->
@@ -250,6 +256,7 @@ ws.onmessage = (e) => {
   if (event === 'preflight_progress') renderPreflightLive(payload);
   if (event === 'sessionHistory') { history = payload; renderHistory(); }
   if (event === 'loudness') { loudness = payload; renderLoudnessMeter(); }
+  if (event === 'loudnessRead') renderLoudnessNote(payload);
   if (event === 'loudnessHistory') { loudnessHistory = payload; renderLoudnessHistory(); }
   if (event === 'warning') setStatus(payload.message, 'warn');
   if (event === 'error') setStatus(payload.message, 'warn');
@@ -258,6 +265,7 @@ ws.onmessage = (e) => {
 
 /** Compact bar+number meter, glanceable mid-service — not a graph. Visible
  *  whenever the monitor has a reading and settings isn't open (screen space). */
+let lastLoudnessStatus = null;
 function renderLoudnessMeter(){
   const el = $('loudnessMeter');
   if (!loudness || settingsOpen) { el.classList.add('hidden'); return; }
@@ -270,6 +278,23 @@ function renderLoudnessMeter(){
   const pct = (v) => Math.max(0, Math.min(100, ((v - lo) / (hi - lo)) * 100));
   $('lmFill').style.width = `${pct(loudness.levelDb)}%`;
   $('lmTargetMark').style.left = `${pct(loudness.targetDb)}%`;
+
+  if (loudness.status !== lastLoudnessStatus) {
+    // A new episode started (or it's back to calm) -- the previous note no
+    // longer applies. Claude's read for THIS episode, if any, lands a few
+    // seconds later via 'loudnessRead' -- the raw meter above never waits.
+    $('lmNote').textContent = '';
+    lastLoudnessStatus = loudness.status;
+  }
+}
+
+/** Claude's contextual read on the current alert episode, filled in a few
+ *  seconds after it fires. Purely additive -- never touches the primary
+ *  number/color above, and is dropped if the meter has already moved on to
+ *  a different status by the time it arrives (a stale note is worse than none). */
+function renderLoudnessNote(payload){
+  if (!loudness || loudness.status !== payload.status) return;
+  $('lmNote').textContent = `Claude: ${payload.note}`;
 }
 
 function renderLoudnessHistory(){
@@ -286,8 +311,18 @@ function renderLoudnessHistory(){
         ${s.alert ? `<span style="color:var(--red)">red ${fmtMin(s.alert)}</span>` : ''}
         ${!s.warn && !s.alert ? '<span class="ok">clean — no threshold time</span>' : ''}
       </div>
+      ${fmtAlertReadCounts(r.alertReadCounts)}
     </li>`;
   }).join('');
+}
+
+/** "3 alerts: 2 dynamics, 1 drift" instead of a bare alert count -- Claude's
+ *  per-episode read, tallied. Blank if there were no warn/alert episodes. */
+function fmtAlertReadCounts(counts){
+  if (!counts || !Object.keys(counts).length) return '';
+  const total = Object.values(counts).reduce((a,b)=>a+b, 0);
+  const parts = Object.entries(counts).map(([k,n]) => `${n} ${k}`).join(', ');
+  return `<div class="lrow2" style="color:var(--dim)">${total} alert${total===1?'':'s'}: ${parts}</div>`;
 }
 
 function setStatus(t, cls){ const s=$('status'); if(!s) return; s.textContent=t; s.className=cls||''; }

@@ -14,6 +14,7 @@
 // than full tune sessions, and this must keep running through all of them.
 
 import { rmsDbfs } from '../dsp/measure.js';
+import { buildLoudnessPayload, claudeLoudnessRead, validate as validateLoudnessRead } from './loudness-advisor.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -112,8 +113,10 @@ export class LevelClassifier {
     this._underQuietSince = null;
   }
 
-  /** Returns { status, changed } — changed is true only on the update where
-   *  status actually flips, so callers can log transitions exactly once. */
+  /** Returns { status, changed, sinceSeconds } — changed is true only on the
+   *  update where status actually flips, so callers can log transitions
+   *  exactly once. sinceSeconds is how long the CURRENT status has been
+   *  continuously true (null for OK, where there's no "since" to report). */
   update(levelDb, elapsedSeconds) {
     const overHard = levelDb >= this.targetDb + this.hardMarginDb;
     const overSoft = levelDb >= this.targetDb + this.softMarginDb;
@@ -125,14 +128,14 @@ export class LevelClassifier {
 
     const sustained = (since) => since !== null && (elapsedSeconds - since) >= this.sustainedSeconds;
 
-    let next = STATUS.OK;
-    if (sustained(this._overHardSince)) next = STATUS.ALERT;
-    else if (sustained(this._overSoftSince)) next = STATUS.WARN;
-    else if (sustained(this._underQuietSince)) next = STATUS.QUIET;
+    let next = STATUS.OK, since = null;
+    if (sustained(this._overHardSince)) { next = STATUS.ALERT; since = this._overHardSince; }
+    else if (sustained(this._overSoftSince)) { next = STATUS.WARN; since = this._overSoftSince; }
+    else if (sustained(this._underQuietSince)) { next = STATUS.QUIET; since = this._underQuietSince; }
 
     const changed = next !== this.status;
     this.status = next;
-    return { status: next, changed };
+    return { status: next, changed, sinceSeconds: since !== null ? elapsedSeconds - since : null };
   }
 }
 
@@ -196,13 +199,18 @@ function makeRecordId() {
  * a live run.
  */
 export class LoudnessMonitor {
-  constructor({ config, room, emit, dataDir = DEFAULT_DATA_DIR, frameSource } = {}) {
+  constructor({ config, room, emit, dataDir = DEFAULT_DATA_DIR, frameSource, claudeReadFn, getSongContext } = {}) {
     this.cfg = config;
     this.room = room;
     this.emit = emit || (() => {});
     this.dataDir = dataDir;
     this.historyDir = path.resolve(dataDir, 'loudness');
     this._frameSourceOverride = frameSource;
+    this._claudeReadFn = claudeReadFn || claudeLoudnessRead;
+    // Optional hook for a future setlist/NEXT integration — absent today, so
+    // every payload just carries currentSongLabel/isWorshipSection: null.
+    this._getSongContext = getSongContext || (() => ({ currentSongLabel: null, isWorshipSection: null }));
+    this._pendingReads = new Set();
     this.running = false;
     this._timer = null;
   }
@@ -269,12 +277,18 @@ export class LoudnessMonitor {
     const dt = frame.length / this.leq.sampleRate;
     const leqDbfs = this.leq.push(frame);
     const levelDb = dbfsToSpl(leqDbfs, this.cfg.audio.splDbOffset);
-    const { status, changed } = this.classifier.update(levelDb, this.leq.elapsedSeconds);
+    const { status, changed, sinceSeconds } = this.classifier.update(levelDb, this.leq.elapsedSeconds);
 
     this.secondsInStatus[status] = (this.secondsInStatus[status] || 0) + dt;
     const rounded = round1(levelDb);
-    if (changed) this.transitions.push({ t: round1(this.leq.elapsedSeconds), status });
+    let transitionRef = null;
+    if (changed) {
+      transitionRef = { t: round1(this.leq.elapsedSeconds), status };
+      this.transitions.push(transitionRef);
+    }
     this.readings.push({ t: round1(this.leq.elapsedSeconds), levelDb: rounded, status });
+
+    this._maybeRequestRead({ status, changed, sinceSeconds, transitionRef, currentDb: rounded });
 
     const now = this.leq.elapsedSeconds;
     let broadcasted = false;
@@ -302,6 +316,47 @@ export class LoudnessMonitor {
     return this.leq && this.leq.totalN > 0 ? this.leq.leqDbfs() : null;
   }
 
+  /**
+   * Event-driven Claude annotation: fires ONE API call per alert episode
+   * (a sustained-threshold transition into warn/alert), never on a timer
+   * and never per frame. Entirely fire-and-forget — pushFrame() returns
+   * immediately regardless of how long this takes or whether it succeeds;
+   * the raw alert (already recorded in `transitions` and broadcast via
+   * 'loudness') is never delayed, hidden, or overridden by this. A failed
+   * or missing-key call resolves to `read: null` on the transition record,
+   * which the UI's secondary annotation line simply never fills in.
+   */
+  _maybeRequestRead({ status, changed, sinceSeconds, transitionRef, currentDb }) {
+    if (!changed || (status !== STATUS.WARN && status !== STATUS.ALERT) || !transitionRef) return;
+    const marginState = status === STATUS.ALERT ? 'red' : 'amber';
+    const { currentSongLabel = null, isWorshipSection = null } = this._getSongContext() || {};
+    const payload = buildLoudnessPayload({
+      currentDb, targetDb: this.lm.targetDb, marginState,
+      overageDurationSec: sinceSeconds ?? 0,
+      readings: this.readings, nowSeconds: this.leq.elapsedSeconds,
+      serviceElapsedMin: (this.leq.elapsedSeconds - this.startedAtSeconds) / 60,
+      currentSongLabel, isWorshipSection
+    });
+
+    const promise = Promise.resolve()
+      .then(() => this._claudeReadFn(payload))
+      .then((advice) => validateLoudnessRead(advice))
+      .catch(() => null)
+      .then((read) => {
+        transitionRef.claudeRead = read;
+        if (read) this.emit('loudnessRead', { status, atSeconds: transitionRef.t, ...read });
+      })
+      .finally(() => this._pendingReads.delete(promise));
+    this._pendingReads.add(promise);
+  }
+
+  /** Test-only: await every in-flight Claude annotation call. Production
+   *  code never needs this — pushFrame()/stop() are deliberately synchronous
+   *  with respect to these calls. */
+  async waitForPendingReads() {
+    await Promise.all([...this._pendingReads]);
+  }
+
   /** Last known level/status, for a freshly-connecting websocket client. */
   snapshot() {
     if (!this.readings?.length) return null;
@@ -316,6 +371,16 @@ export class LoudnessMonitor {
 
   buildRecord() {
     const levels = this.readings.map((r) => r.levelDb).filter(Number.isFinite);
+    // "3 alerts: 2 dynamics, 1 genuine drift" — Claude's read is bucketed
+    // per alert episode, not per raw threshold crossing. A read that never
+    // resolved before this record was saved (still in flight, or the API
+    // call failed/no key) counts as 'unavailable' rather than being dropped.
+    const alertReadCounts = {};
+    for (const t of this.transitions) {
+      if (t.status !== STATUS.WARN && t.status !== STATUS.ALERT) continue;
+      const key = t.claudeRead ? t.claudeRead.read : 'unavailable';
+      alertReadCounts[key] = (alertReadCounts[key] || 0) + 1;
+    }
     return {
       id: makeRecordId(),
       startedAt: this.startedAt,
@@ -325,6 +390,7 @@ export class LoudnessMonitor {
       avgDb: levels.length ? round1(levels.reduce((a, b) => a + b, 0) / levels.length) : null,
       peakDb: levels.length ? round1(Math.max(...levels)) : null,
       secondsInStatus: { ...this.secondsInStatus },
+      alertReadCounts,
       transitions: this.transitions
     };
   }
