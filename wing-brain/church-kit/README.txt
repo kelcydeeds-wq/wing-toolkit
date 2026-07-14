@@ -9,6 +9,14 @@ instructions) are in docs\CHURCH_SESSION.md — this folder is just the
 
 GETTING THIS ONTO THE CHURCH PC
 -------------------------------
+Now that the repo is on GitHub (kelcydeeds-wq/wing-toolkit, private), the
+easiest way is a git clone/pull on the church PC — no USB stick needed:
+  git clone https://github.com/kelcydeeds-wq/wing-toolkit.git
+  (or, if it's already cloned there: git pull)
+Then cd into wing-brain and run 0-FIRST-TIME-SETUP.bat as below.
+
+If the church PC has no internet access or no git installed, fall back to
+the USB method:
 1. Copy the whole "wing-brain" folder to a USB stick.
    (You can skip the "node_modules" folder — step 0 rebuilds it.)
 2. On the church PC, copy it somewhere like C:\wing-brain.
@@ -25,6 +33,12 @@ THE SEQUENCE
                               dump -> plan -> apply chain against the
                               built-in mock console. If this passes,
                               the software side is healthy.
+
+  1b-LIST-AUDIO-DEVICES.bat   Optional. Lists every audio device Windows
+                              sees on this PC -- run it to find the
+                              Wing's USB audio interface (or SoundGrid
+                              once installed) before trying step 6's
+                              live measurement. READ-ONLY.
 
   --- at the church, in order ---
 
@@ -43,6 +57,12 @@ THE SEQUENCE
                                 this step and bring the dump file home
                                 so the addresses can be fixed. Nothing
                                 is broken and nothing was changed.
+
+  2b-IDENTIFY-OUTPUTS.bat     Optional. Fast read-only check of every
+                              main/matrix number's name + mute state --
+                              use it to fill in config\default.json's
+                              outputs[].wing.num "confirm at audit"
+                              TODOs without reading the full dump.
 
   3-PLAN-REMAP.bat            Builds the channel remap plan from the
                               dump and OPENS THE PLAN IN NOTEPAD.

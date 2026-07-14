@@ -8,11 +8,12 @@ box placement). Bring this file's results section to our next session.
 
 ## NOW (office, no hardware needed)
 
-- [ ] Unzip `wing-brain`, run `npm install`, then `npm run dev`
+- [x] Unzip `wing-brain`, run `npm install`, then `npm run dev`
 - [ ] Open the printed address on your phone (same WiFi) → run a mock **Full Tune**
       end to end. You should walk through 5 positions and land on a review screen
       with delay + EQ recommendations. This is the exact church workflow.
-- [ ] Create the GitHub repo, push `wing-brain`. All future work lands here.
+- [x] Create the GitHub repo, push `wing-brain`. All future work lands here.
+      (private repo: github.com/kelcydeeds-wq/wing-toolkit)
 - [ ] Get a USB-A→XLR or interface plan for the Behringer measurement mic on the
       mini PC (if the mic will come back through the Wing instead, note that —
       it changes `config/default.json` audio input mapping, nothing else).
