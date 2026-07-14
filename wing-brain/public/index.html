@@ -402,7 +402,9 @@ function render(){
     return;
   }
 
-  $('exitBtn').classList.toggle('hidden', !session || ['idle', 'preflight', 'wizard'].includes(session.state));
+  // Back button is available on every testing page (preflight, session, wizard,
+  // review, done) so there's always a way home — only the idle home screen hides it.
+  $('exitBtn').classList.toggle('hidden', !session || session.state === 'idle');
 
   if (session?.state === 'preflight') {
     show('preflightView');

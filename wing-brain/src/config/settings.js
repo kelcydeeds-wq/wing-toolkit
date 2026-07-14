@@ -198,6 +198,9 @@ export function validateConfig(config, room) {
       bad('testSignal.injectionChannelNum: must be null or a positive integer');
     }
     if (typeof ts.confirmed !== 'boolean') bad('testSignal.confirmed: must be a boolean');
+    if (ts.auxChannel !== undefined && ts.auxChannel !== null && (!isInt(ts.auxChannel) || ts.auxChannel < 1)) {
+      bad('testSignal.auxChannel: must be null/absent or a positive integer');
+    }
   }
 
   const g = config.guardrails || {};

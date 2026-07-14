@@ -167,10 +167,12 @@ export function seedMockConsole(transport) {
     slot++;
   }
 
-  // DCA + mute group assignments -- these must move with a channel on remap.
-  set('/ch/30/grp/dca/1', 1);        // Vox FX riding DCA 1 today
-  set('/ch/1/grp/mute/1', 1);
-  set('/ch/2/grp/mute/1', 1);
+  // DCA + mute group membership -- a single `tags` string per channel on the
+  // real console (#D<k> = DCA k, #M<k> = mute group k). These must move with a
+  // channel on remap.
+  set('/ch/30/tags', '#D1');         // Vox FX riding DCA 1 today
+  set('/ch/1/tags', '#M1');
+  set('/ch/2/tags', '#M1');
 
   // Bus sends -- also downstream references a remap must chase.
   set('/bus/1/name', 'Vox Reverb');

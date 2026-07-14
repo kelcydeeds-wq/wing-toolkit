@@ -94,7 +94,7 @@ test('dumpWingState captures DCA and mute-group assignments and bus sends for th
   const { dump } = await dumpWingState({ mock: true, timeoutMs: 200, concurrency: 16, out: outPath });
 
   const ch30 = dump.channels.find((c) => c.index === 30);
-  assert.deepEqual(ch30.values['/ch/30/grp/dca/1'], [1], 'DCA assignment should be captured');
+  assert.deepEqual(ch30.values['/ch/30/tags'], ['#D1'], 'DCA membership (tags string) should be captured');
   assert.deepEqual(ch30.values['/ch/30/send/1/on'], [1], 'bus send on/off should be captured');
   assert.deepEqual(ch30.values['/ch/30/send/1/lvl'], [-8], 'bus send level should be captured');
 

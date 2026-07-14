@@ -3,6 +3,100 @@
 Running log of judgment calls made during autonomous work runs, so they can be
 reviewed and reversed if wrong.
 
+## 2026-07-14 (church audit session) — FIRST live console contact: addresses largely confirmed, DCA/mute model corrected, output config fixed
+
+First time the toolchain ever touched the real Wing (192.168.25.80:2223, a
+"FusionFOH" WING, firmware 3.0.5). Ran the read-only audit steps against real
+hardware. Results, newest-relevant first:
+
+- **The corrected address map from the 2026-07-10 spec review is basically
+  right.** A full `dump-wing-state` answered ~73% of addresses on the first
+  real run (channels/buses/mains/matrices/DCAs all read with real names,
+  gains, EQ, sends) — nowhere near the "near-0%, everything's wrong" failure
+  the run-sheet warned about. Fader/mute/EQ/dynamics/sends/name/HPF/input-patch
+  all confirmed working against real hardware.
+
+- **DCA + mute-group membership addresses were wrong and are now fixed.** The
+  old guess was a per-index boolean (`/ch/N/grp/dca/K`, `/ch/N/grp/mute/K`) —
+  every one of those timed out (null) across all 40 channels. Discovered the
+  real scheme by **node-tree enumeration**: querying a *container* address
+  (e.g. `/ch/2` with no args) makes the Wing reply with its child node names.
+  Walking that tree revealed membership lives in a single comma-separated
+  string at **`/ch/N/tags`** (and `/bus/N/tags`): `#D<k>` = member of DCA k,
+  `#M<k>` = member of mute group k (plus any custom tags, preserved).
+  Verified across all 40 channels — 100% consistent with the DCA names
+  (drums→#D1, bass→#D2, guitars→#D3, keys→#D4, vox→#D5, all-band→#D6).
+  - Schema change: `dcaAssignFields`/`muteGroupAssignFields` (arrays of
+    per-index addresses) replaced by a single `tags` leaf on channel/bus
+    strips, plus exported `parseTags()`/`formatTags()`. Consumers updated:
+    `plan-remap` parses the tags string; `apply-remap` no longer sends
+    per-index membership — the `tags` leaf is read from source and copied
+    verbatim by the existing generic write loop, so membership (and any custom
+    tags) travels with a moved channel for free. Mock seeder + 4 tests updated;
+    full suite (218) green. Bonus: dropping ~960 dead per-index addresses from
+    the query set pushed the dump's answered ratio to 96%.
+  - This closes the biggest `TODO(church)` item. Node-container enumeration is
+    now the go-to technique for confirming any remaining unknown address.
+
+- **Output config had a real bug, now fixed.** `config/default.json` mapped the
+  Sub to `main/3`, but the real console has **main 2 = SUBS, main 3 =
+  BROADCAST**. As shipped, the tuning tool would have EQ'd the broadcast feed
+  thinking it was the sub. Corrected sub→`main/2`; all four tuning outputs
+  (mains=main1, sub=main2, side-fills=mtx1, center-fill=mtx2) now verified
+  against real names and flipped to `wing.confirmed: true`. (`physicalOutputs`
+  patch addresses + `testSignal` injection point remain unconfirmed — not
+  covered this session; still gated `confirmed: false`.)
+
+- **OSC traffic recorder captures nothing — the console doesn't push.** An
+  8-second live capture recorded 0 messages. The Wing only *replies to
+  requests*; it does not send unsolicited parameter updates to an OSC client
+  that hasn't subscribed. `record-osc.mjs` (and anything wanting live change
+  streams, e.g. loudness monitoring off console meters) needs a **subscription
+  handshake** first — presumably an X32-`/xremote`-style periodic renew, exact
+  Wing command not yet known. TODO: discover the Wing subscribe command (try
+  node-enumerating the root `/` for a subscribe node, or capture what the
+  official Wing app sends). Until then the rehearsal-recording step is a no-op.
+
+- **Channel remap: generated the plan, decided NOT to apply it.** The console
+  is already cleanly laid out by a human. The keyword classifier badly misreads
+  this church's naming — it dumped the vocalists (Main/Vern/Renita/Scott) and
+  half the drum kit (Rack/Floor/OH/Perc) into "Unassigned/spare". Applying it
+  would scramble a good layout. The remap classifier needs church-specific
+  keyword tuning (an at-home task) before it's usable here; the whole
+  reorg-the-console premise may simply not apply to this well-kept board.
+
+- **Full control/routing map + more live fixes (second half of the session).**
+  Enumerated the console's whole node tree to understand it end to end:
+  - Top level: `/io /ch /aux /bus /main /mtx /dca /mgrp /fx /cards /play /rec
+    /$ctl /$globals` etc. Mains have 6 numbered EQ bands + l/h shelves + a tilt;
+    dynamics are a bus compressor (`SBUS`).
+  - **`applyTuning` delay bug fixed.** Was writing `/<out>/delay` (a no-op).
+    Real address is `/<out>/dly/dly` + `/dly/on` + `/dly/mode`; units token
+    `MS`/`M`/`FT`/`SMP` (discovered by trial on the unused Main 4, restored
+    after). Now forces `MS` and enables the delay. Code + osc.test updated.
+    NOTE for whoever runs the first real Apply: the mains already carry a real
+    engineer-set alignment delay (`/main/1/dly` was 13.5 with mode `FT`) —
+    applyTuning will OVERWRITE it. That's intended (the tool sets alignment),
+    but confirm the baseline scene is saved first.
+  - **Audio-device config was wrong too** (same class as the sub bug): config
+    said `SoundGrid`, but there is no SoundGrid card — the mini-PC talks to the
+    Wing over its built-in USB-C audio (`BEHRINGER WING-USB`, the "USB" routing
+    group). Fixed `audio.inputDevice`/`outputDevice` to
+    `IN 1-2`/`OUT 1-2 (BEHRINGER WING-USB)`. Installed sox; confirmed sox↔Wing
+    capture works.
+  - **Silent sweep root cause (found by the user):** the injection channel's
+    input was patched to a local analog input, not the USB return — repatched
+    to USB 1-2 on the console and the sweep now plays through the mains.
+  - **OSC write control verified** live (toggled the unused `/mtx/3/mute` and
+    restored). So `soloOutput()`'s one-output-at-a-time muting works on the
+    real console. Reference loopback is already wired: `/io/out/USB/1` ← MAIN 1,
+    so PC IN 1 = Main 1. Remaining gap for real measurement: `/io/out/USB/2`
+    still ← MAIN 2 (subs); the measurement mic (ch 39) needs to land on USB
+    out 2 so PC IN 2 = mic.
+  - Construction crew on site this session — any mic/frequency data captured
+    today is noise-contaminated and must be treated as throwaway (plumbing
+    validation only, not real tuning).
+
 ## 2026-07-14 — two-layer routing model, per-driver test injection, shared-driver wizard
 
 Comprehensive rework requested with an explicit constraint: **run OSC

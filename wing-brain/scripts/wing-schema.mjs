@@ -42,8 +42,7 @@ export function channelStrip(n) {
     ...dynamicsFields(p),
     ...channelEqFields(p),
     ...mixFields(p),
-    dcaAssign: dcaAssignFields(p),
-    muteGroupAssign: muteGroupAssignFields(p),
+    tags: `${p}/tags`,
     sends: sendFields(p, BUS_COUNT),
     mainSends: mainSendFields(p)
   };
@@ -59,8 +58,7 @@ export function busStrip(n) {
     ...dynamicsFields(p),
     ...busEqFields(p),
     ...mixFields(p),
-    dcaAssign: dcaAssignFields(p),
-    muteGroupAssign: muteGroupAssignFields(p),
+    tags: `${p}/tags`,
     sends: sendFields(p, MATRIX_COUNT) // buses feed matrices, not other buses
   };
 }
@@ -205,14 +203,38 @@ function mixFields(p) {
   };
 }
 
-function dcaAssignFields(p) {
-  // TODO(church): unconfirmed -- not in the corrected address source, left as-is.
-  return Array.from({ length: DCA_COUNT }, (_, i) => ({ dca: i + 1, address: `${p}/grp/dca/${i + 1}` }));
+// DCA and mute-group membership are NOT per-index boolean addresses (the old
+// `/ch/N/grp/dca/K` guess was wrong — every such address timed out on the real
+// console). Confirmed at the church 2026-07-14: membership lives in a single
+// comma-separated string at `/ch/N/tags` (and `/bus/N/tags`), where `#D<k>` =
+// member of DCA k and `#M<k>` = member of mute group k. Other (custom) tags may
+// also appear and are preserved. Discovered by node-tree enumeration — querying
+// the container `/ch/N` returns its child node names, which is how the real
+// address was found. `tags` is exposed as a plain leaf on the channel/bus
+// strips, so the dump captures it and apply-remap copies it verbatim; parse it
+// with parseTags() below.
+
+/** Parse a Wing `tags` string (e.g. "#D1,#D6,#M3") into membership arrays.
+ *  Accepts a raw reply array or a bare string. Non-#D/#M tokens -> `other`. */
+export function parseTags(raw) {
+  const s = readValue(raw);
+  const str = typeof s === 'string' ? s : '';
+  const dca = [], muteGroups = [], other = [];
+  for (const token of str.split(',')) {
+    const tok = token.trim();
+    if (!tok) continue;
+    const d = /^#D(\d+)$/.exec(tok);
+    const m = /^#M(\d+)$/.exec(tok);
+    if (d) dca.push(Number(d[1]));
+    else if (m) muteGroups.push(Number(m[1]));
+    else other.push(tok);
+  }
+  return { dca, muteGroups, other };
 }
 
-function muteGroupAssignFields(p) {
-  // TODO(church): unconfirmed -- not in the corrected address source, left as-is.
-  return Array.from({ length: MUTE_GROUP_COUNT }, (_, i) => ({ group: i + 1, address: `${p}/grp/mute/${i + 1}` }));
+/** Inverse of parseTags — build a `tags` string from membership arrays. */
+export function formatTags({ dca = [], muteGroups = [], other = [] } = {}) {
+  return [...dca.map((d) => `#D${d}`), ...muteGroups.map((g) => `#M${g}`), ...other].join(',');
 }
 
 /** Sends to the next bus tier (channel/bus -> bus/matrix). */

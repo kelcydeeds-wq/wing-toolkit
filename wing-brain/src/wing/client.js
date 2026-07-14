@@ -50,19 +50,54 @@ class LiveWing {
     return t.type === 'mtx' ? `/mtx/${t.num}` : `/main/${t.num}`;
   }
 
-  /** Route measurement source to exactly one bus, others muted. `buses` is
-   *  the caller's already-filtered active-bus list (session.js decides
-   *  which buses are in play from physicalOutputs[].enabled). */
+  /** OSC address that turns the injected test signal on/off for one bus, if
+   *  `testSignal.auxChannel` is configured (confirmed live 2026-07-14): the
+   *  aux strip receiving the injected signal has independent send/assign
+   *  toggles per main and per matrix, so isolation can happen at the SOURCE
+   *  instead of by muting bus masters. Returns null if no aux is configured
+   *  (caller falls back to mute-based isolation). */
+  sourceSwitchAddress(bus) {
+    const aux = this.cfg.testSignal?.auxChannel;
+    if (!aux) return null;
+    const t = bus.wing || {};
+    return t.type === 'mtx' ? `/aux/${aux}/send/MX${t.num}/on` : `/aux/${aux}/main/${t.num}/on`;
+  }
+
+  /**
+   * Route measurement source to exactly one bus. `buses` is the caller's
+   * already-filtered active-bus list (session.js decides which buses are in
+   * play from physicalOutputs[].enabled).
+   *
+   * PREFERS source-side isolation (toggling the injected signal's per-bus
+   * send, via sourceSwitchAddress()) over muting bus masters. Muting is NOT
+   * safe on this console: `/cfg/mainlink` links Main 1 (mains) + Main 2 (sub)
+   * so muting Main 1 to isolate another bus force-mutes the sub too (confirmed
+   * live 2026-07-14 -- Main 2's effective $mute followed Main 1's mute even
+   * though Main 2's own mute button was untouched). Source-side isolation
+   * sidesteps this entirely: bus mute state is never touched, so a linked bus
+   * is unaffected by another bus being isolated. Falls back to the old
+   * mute-based method only if no `testSignal.auxChannel` is configured (e.g.
+   * mock/tests, or a console where this hasn't been set up yet).
+   */
   async soloOutput(busId, buses) {
     await this.ready;
     for (const bus of buses) {
-      this.osc.send(`${this.path(bus)}/mute`, [bus.id === busId ? 0 : 1]);
+      const on = bus.id === busId;
+      const srcAddr = this.sourceSwitchAddress(bus);
+      if (srcAddr) this.osc.send(srcAddr, [on ? 1 : 0]);
+      else this.osc.send(`${this.path(bus)}/mute`, [on ? 0 : 1]);
     }
   }
 
   async unmuteAll(buses) {
     await this.ready;
-    for (const bus of buses) this.osc.send(`${this.path(bus)}/mute`, [0]);
+    for (const bus of buses) {
+      const srcAddr = this.sourceSwitchAddress(bus);
+      // Defensive: always unmute the bus itself too (cheap, harmless, and
+      // covers any bus left muted by a prior session's old mute-based run).
+      this.osc.send(`${this.path(bus)}/mute`, [0]);
+      if (srcAddr) this.osc.send(srcAddr, [0]); // session over -- injector silent
+    }
   }
 
   /** Apply recommended filters + delay to a BUS. Only called from Apply tap.
@@ -70,19 +105,28 @@ class LiveWing {
    *  only, correction always targets the bus layer. */
   async applyTuning(bus, filters, addDelayMs) {
     await this.ready;
-    this.osc.send(`${this.path(bus)}/delay`, [addDelayMs]);
+    // Delay on the real console is /<out>/dly/dly (value) + /dly/on + /dly/mode,
+    // NOT /<out>/delay (confirmed live 2026-07-14 — the old address was a no-op).
+    // mode "MS" = milliseconds (also valid: M=meters, FT=feet, SMP=samples); the
+    // recommender works in ms, so force MS before writing the value.
+    const dp = `${this.path(bus)}/dly`;
+    this.osc.send(`${dp}/mode`, ['MS']);      // string enum
+    this.osc.sendFloat(`${dp}/dly`, [addDelayMs]); // continuous -> MUST be float
+    this.osc.send(`${dp}/on`, [1]);           // discrete on/off
     filters.forEach((f, i) => {
       const band = i + 1;
       if (band > MAX_EQ_BANDS) {
         console.warn(`[wing] ${bus.id}: filter #${band} has no EQ band on this bus (max ${MAX_EQ_BANDS}) -- skipped: ${f.freq} Hz`);
         return;
       }
+      // EQ freq/gain/Q are continuous — the Wing ignores integer-typed values
+      // for these, so they must go out as OSC floats (see osc.js sendFloat).
       const base = `${this.path(bus)}/eq`;
-      this.osc.send(`${base}/${band}f`, [f.freq]);
-      this.osc.send(`${base}/${band}g`, [f.gainDb]);
-      this.osc.send(`${base}/${band}q`, [f.q]);
+      this.osc.sendFloat(`${base}/${band}f`, [f.freq]);
+      this.osc.sendFloat(`${base}/${band}g`, [f.gainDb]);
+      this.osc.sendFloat(`${base}/${band}q`, [f.q]);
     });
-    this.osc.send(`${this.path(bus)}/eq/on`, [1]);
+    this.osc.send(`${this.path(bus)}/eq/on`, [1]); // discrete on/off
   }
 
   /** Per-driver test injection (routing model section 2) — repatch one

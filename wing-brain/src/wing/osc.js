@@ -47,6 +47,18 @@ class LiveOscTransport {
   }
 
   /**
+   * Send numeric args explicitly as OSC floats. REQUIRED for the Wing's
+   * continuous parameters — EQ freq/gain/Q, fader, delay: the console SILENTLY
+   * IGNORES an integer-typed ('i') value for these (confirmed live 2026-07-14 —
+   * e.g. gain -3 sent as 'i' no-ops, sent as 'f' works). toOscArg() would type a
+   * whole-number value as 'i', so any caller writing a continuous param must use
+   * this instead of send(). Discrete params (mute/on/index) still use send().
+   */
+  sendFloat(address, args = []) {
+    this.port.send({ address, args: args.map((v) => ({ type: 'f', value: Number(v) })) });
+  }
+
+  /**
    * Query the console's current value at `address`: send an empty message,
    * wait for the console to reply on the same address. Resolves `null` on
    * timeout instead of hanging or throwing — callers (state dumps, remap
@@ -121,6 +133,10 @@ class MockOscTransport {
       if (pattern.test(address)) handler(args, address);
     }
   }
+
+  /** Mock mirror of the live float send — values are plain numbers here, so it
+   *  behaves exactly like send(); it exists so callers can use one API. */
+  sendFloat(address, args = []) { return this.send(address, args); }
 
   async get(address) {
     return this.store.has(address) ? this.store.get(address) : null;

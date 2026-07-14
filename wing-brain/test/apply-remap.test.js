@@ -11,8 +11,7 @@ function seedSourceChannel(transport, index) {
   transport.send(`/ch/${index}/name`, ['Kick In']);
   transport.send(`/ch/${index}/fdr`, [-4]);
   transport.send(`/ch/${index}/mute`, [0]);
-  transport.send(`/ch/${index}/grp/dca/2`, [1]);
-  transport.send(`/ch/${index}/grp/mute/3`, [1]);
+  transport.send(`/ch/${index}/tags`, ['#D2,#M3']); // member of DCA 2 + mute group 3
   transport.send(`/ch/${index}/send/5/on`, [1]);
   transport.send(`/ch/${index}/send/5/lvl`, [-6]);
 }
@@ -58,8 +57,7 @@ test('execute copies settings to the destination, renames, and applies reference
   assert.equal(result.status, 'applied');
   assert.deepEqual(await transport.get('/ch/4/name'), ['Kick In']);
   assert.deepEqual(await transport.get('/ch/4/fdr'), [-4]);
-  assert.deepEqual(await transport.get('/ch/4/grp/dca/2'), [1], 'DCA reference re-applied at the destination');
-  assert.deepEqual(await transport.get('/ch/4/grp/mute/3'), [1], 'mute group reference re-applied');
+  assert.deepEqual(await transport.get('/ch/4/tags'), ['#D2,#M3'], 'DCA + mute-group membership copied via the tags string');
   assert.deepEqual(await transport.get('/ch/4/send/5/on'), [1]);
   assert.deepEqual(await transport.get('/ch/4/send/5/lvl'), [-6]);
 });

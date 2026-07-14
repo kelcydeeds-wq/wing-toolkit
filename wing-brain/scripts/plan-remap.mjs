@@ -21,7 +21,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { channelStrip, readValue } from './wing-schema.mjs';
+import { channelStrip, readValue, parseTags } from './wing-schema.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
@@ -76,8 +76,9 @@ function chaseReferences(dump, channelIndex) {
   const chanDump = dump.channels.find((c) => c.index === channelIndex);
   const values = chanDump ? chanDump.values : {};
 
-  const dca = strip.dcaAssign.filter((d) => readValue(values[d.address])).map((d) => d.dca);
-  const muteGroups = strip.muteGroupAssign.filter((g) => readValue(values[g.address])).map((g) => g.group);
+  // DCA + mute-group membership come from the channel's `tags` string
+  // (e.g. "#D1,#D6,#M3"), confirmed against the real console 2026-07-14.
+  const { dca, muteGroups } = parseTags(values[strip.tags]);
   const sends = strip.sends
     .filter((s) => readValue(values[s.on]))
     .map((s) => ({ bus: s.bus, level: readValue(values[s.level]) }));

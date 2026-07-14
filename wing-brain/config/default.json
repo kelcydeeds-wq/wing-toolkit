@@ -1,23 +1,24 @@
 {
-  "mode": "mock",
+  "mode": "live",
   "server": {
     "port": 3000
   },
   "wing": {
-    "host": "192.168.1.50",
+    "host": "192.168.25.80",
     "port": 2223
   },
   "testSignal": {
-    "comment": "Unconfirmed -- see docs/DECISIONS.md 'routing model' entry. Either the PC's USB sweep playback is physically wired into one console input (injectionChannelGrp/Num), or the Wing has its own OSC-controllable generator (source: wing_oscillator) -- never checked which. confirmed must be true before live injection is allowed.",
+    "comment": "CONFIRMED 2026-07-14: sweep injection is via the PC's USB audio, NOT OSC. The PC plays out 'OUT 1-2 (WING-USB)'; on the console that arrives as Aux input 1 ('PC', sourced /aux/1 from USB/1). This OSC test-signal-injection path (per-driver repatch via PatchManager) is unused and stays confirmed:false. `auxChannel` below is a SEPARATE mechanism: bus isolation (soloOutput) toggles this aux strip's own per-bus sends (/aux/<n>/main/<m>/on, /aux/<n>/send/MX<m>/on) instead of muting bus masters, because muting Main 1 also mutes the linked Main 2 (sub) -- see docs/MEASUREMENT_RIG.md.",
     "source": "usb_sweep",
-    "injectionChannelGrp": null,
-    "injectionChannelNum": null,
+    "injectionChannelGrp": "USB",
+    "injectionChannelNum": 1,
+    "auxChannel": 1,
     "confirmed": false
   },
   "audio": {
     "sampleRate": 48000,
-    "inputDevice": "SoundGrid",
-    "outputDevice": "SoundGrid",
+    "inputDevice": "IN 1-2 (BEHRINGER WING-USB)",
+    "outputDevice": "OUT 1-2 (BEHRINGER WING-USB)",
     "referenceInputChannel": 1,
     "micInputChannel": 2,
     "splDbOffset": null,
@@ -43,8 +44,15 @@
       "label": "Mains",
       "role": "main",
       "stereo": true,
-      "wing": { "type": "main", "num": 1, "confirmed": false },
-      "band": [40, 16000],
+      "wing": {
+        "type": "main",
+        "num": 1,
+        "confirmed": true
+      },
+      "band": [
+        40,
+        16000
+      ],
       "sweepTrimDb": 0
     },
     {
@@ -52,8 +60,15 @@
       "label": "Sub",
       "role": "sub",
       "stereo": false,
-      "wing": { "type": "main", "num": 3, "confirmed": false },
-      "band": [25, 120],
+      "wing": {
+        "type": "main",
+        "num": 2,
+        "confirmed": true
+      },
+      "band": [
+        25,
+        120
+      ],
       "sweepTrimDb": -6
     },
     {
@@ -61,22 +76,41 @@
       "label": "Center Fill",
       "role": "fill",
       "stereo": false,
-      "wing": { "type": "mtx", "num": 2, "confirmed": false },
-      "band": [80, 16000],
+      "wing": {
+        "type": "mtx",
+        "num": 2,
+        "confirmed": true
+      },
+      "band": [
+        80,
+        16000
+      ],
       "sweepTrimDb": 0,
       "alignTo": "mains",
-      "alignPositions": ["p1"]
+      "alignPositions": [
+        "p1"
+      ]
     },
     {
       "id": "side_fills",
       "label": "Side Fills",
       "role": "fill",
       "stereo": false,
-      "wing": { "type": "mtx", "num": 1, "confirmed": false },
-      "band": [80, 16000],
+      "wing": {
+        "type": "mtx",
+        "num": 1,
+        "confirmed": true
+      },
+      "band": [
+        80,
+        16000
+      ],
       "sweepTrimDb": 0,
       "alignTo": "mains",
-      "alignPositions": ["p2", "p3"]
+      "alignPositions": [
+        "p2",
+        "p3"
+      ]
     }
   ],
   "physicalOutputs": [
@@ -87,7 +121,11 @@
       "side": "L",
       "speakerId": "main_l",
       "enabled": true,
-      "wing": { "grp": null, "num": null, "confirmed": false }
+      "wing": {
+        "grp": null,
+        "num": null,
+        "confirmed": false
+      }
     },
     {
       "id": "main_r_out",
@@ -96,7 +134,11 @@
       "side": "R",
       "speakerId": "main_r",
       "enabled": true,
-      "wing": { "grp": null, "num": null, "confirmed": false }
+      "wing": {
+        "grp": null,
+        "num": null,
+        "confirmed": false
+      }
     },
     {
       "id": "sub_out",
@@ -105,7 +147,11 @@
       "side": "mono",
       "speakerId": "sub",
       "enabled": true,
-      "wing": { "grp": null, "num": null, "confirmed": false }
+      "wing": {
+        "grp": null,
+        "num": null,
+        "confirmed": false
+      }
     },
     {
       "id": "center_fill_out",
@@ -114,7 +160,11 @@
       "side": "mono",
       "speakerId": "fill_c",
       "enabled": true,
-      "wing": { "grp": null, "num": null, "confirmed": false }
+      "wing": {
+        "grp": null,
+        "num": null,
+        "confirmed": false
+      }
     },
     {
       "id": "side_fills_out",
@@ -122,12 +172,22 @@
       "sourceBusId": "side_fills",
       "side": "mono",
       "enabled": true,
-      "wing": { "grp": null, "num": null, "confirmed": false },
+      "wing": {
+        "grp": null,
+        "num": null,
+        "confirmed": true
+      },
       "sharedDrivers": {
         "count": 2,
         "drivers": [
-          { "label": "Side L", "speakerId": "fill_l" },
-          { "label": "Side R", "speakerId": "fill_r" }
+          {
+            "label": "Side L",
+            "speakerId": "fill_l"
+          },
+          {
+            "label": "Side R",
+            "speakerId": "fill_r"
+          }
         ]
       }
     }

@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { classify, buildRemapPlan, toMarkdown, parseArgs, planRemap } from '../scripts/plan-remap.mjs';
-import { channelStrip } from '../scripts/wing-schema.mjs';
+import { channelStrip, formatTags } from '../scripts/wing-schema.mjs';
 
 const TARGET_LAYOUT = {
   ranges: [
@@ -25,8 +25,8 @@ function makeDump(channelSpecs, { userKeys = [] } = {}) {
     const values = {};
     for (const addr of allAddresses(strip)) values[addr] = null;
     values[`/ch/${index}/name`] = [name];
-    for (const busNum of dca) values[strip.dcaAssign.find((d) => d.dca === busNum).address] = [1];
-    for (const g of muteGroups) values[strip.muteGroupAssign.find((m) => m.group === g).address] = [1];
+    // Membership is a single tags string (e.g. "#D2,#M3") on the real console.
+    if (dca.length || muteGroups.length) values[strip.tags] = [formatTags({ dca, muteGroups })];
     for (const s of sends) {
       const field = strip.sends.find((x) => x.bus === s.bus);
       values[field.on] = [1];

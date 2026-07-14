@@ -54,6 +54,16 @@ corrected shapes, so you don't have to re-derive them:
 - Sends: `/ch/<n>/send/<bus>/lvl`, `/send/<bus>/on` — not `"mix"`.
 - Main assigns (separate from sends): `/ch/<n>/main/<n>/on`,
   `/main/<n>/lvl`.
+- **Output delay** (confirmed live 2026-07-14): `/<out>/dly/dly` (value) +
+  `/<out>/dly/on` + `/<out>/dly/mode` — NOT `/<out>/delay` (that address is a
+  no-op; the app used to write it). `mode` units token: `MS` ms, `M` meters,
+  `FT` feet, `SMP` samples. The recommender works in ms, so write `MS` first.
+- **USB audio I/O routing** (the mini-PC's interface = the "USB" group):
+  Wing→PC feed is `/io/out/USB/<n>/grp` (source group, e.g. `MAIN`) +
+  `/io/out/USB/<n>/in` (index). PC→Wing is a source group `USB` selected on a
+  channel via `/ch/<n>/in/conn/grp` = `USB`, `/ch/<n>/in/conn/in` = <ch>.
+  Confirmed groups: `/io/in` = [LCL,AUX,A,B,C,SC,USB,CRD,MOD,PLAY,AES,USR,OSC,…];
+  `/io/out` = [LCL,AUX,A,B,C,SC,USB,CRD,MOD,REC,AES]. `usbacfg` = "48/48".
 - **Gain is not a channel address.** A channel's input gain and
   phantom/invert live on the physically patched I/O slot: read
   `/ch/<n>/in/conn/grp` + `/ch/<n>/in/conn/in` first, then query
@@ -62,9 +72,19 @@ corrected shapes, so you don't have to re-derive them:
   normalizedFloat 0-1, rawValue]`, not a single value. Use `readValue()`
   from `wing-schema.mjs` to interpret one (never index `[0]` directly for
   truthy/numeric checks — the display string is truthy either way).
-- **Still unconfirmed, marked `TODO(church)`, do not guess:** DCA/mute-group
-  *membership* addresses, aux/group bus count, matrix count, DCA count,
-  mute-group count, custom/user-key addresses.
+- **DCA/mute-group membership** (confirmed live 2026-07-14): a single
+  comma-separated string at `/ch/<n>/tags` (and `/bus/<n>/tags`), where
+  `#D<k>` = member of DCA k and `#M<k>` = member of mute group k (custom tags
+  preserved). NOT the old per-index `/ch/<n>/grp/dca/<k>` boolean (that was
+  wrong — all null). Parse/build with `parseTags()`/`formatTags()` in
+  `wing-schema.mjs`.
+- **Still unconfirmed, marked `TODO(church)`, do not guess:** physical output
+  patch addresses + test-signal injection point (both gated `confirmed:false`),
+  aux/group bus count, matrix count, DCA count, mute-group count,
+  custom/user-key addresses.
+- **Discovery technique:** querying a *container* address with no args (e.g.
+  `/ch/2`) makes the Wing reply with its child node names — walk that tree to
+  confirm any unknown address instead of guessing.
 
 Full rationale for every corrected address is in
 `wing-brain/docs/DECISIONS.md` under "Wing OSC address correction".

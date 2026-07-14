@@ -178,6 +178,52 @@ test('LiveWing.unmuteAll unmutes every bus passed to it', async () => {
   }
 });
 
+// When testSignal.auxChannel is configured, isolation MUST happen via the
+// injected signal's own per-bus source switch, never by muting bus masters --
+// see client.js sourceSwitchAddress() for why (a linked main/sub pair means
+// muting one silently mutes the other on the real console).
+test('LiveWing.soloOutput uses source-side switching (never mutes) when testSignal.auxChannel is set', async () => {
+  const srv = fakeConsole();
+  await srv.ready;
+  const wing = makeWing({ mode: 'live', wing: { host: '127.0.0.1', port: srv.boundPort() }, testSignal: { auxChannel: 1 } });
+  try {
+    await wing.ready;
+    await wing.soloOutput('sub', buses); // buses = mains(main/1), sub(main/2), center_fill(mtx/2)
+    await wait(100);
+
+    const byAddress = Object.fromEntries(srv.received.map((m) => [m.address, m.args[0]]));
+    assert.equal(byAddress['/aux/1/main/1/on'], 0, 'mains source switched off');
+    assert.equal(byAddress['/aux/1/main/2/on'], 1, 'sub source switched on');
+    assert.equal(byAddress['/aux/1/send/MX2/on'], 0, 'center_fill (matrix) source switched off');
+    assert.ok(!('/main/1/mute' in byAddress), 'mains bus mute never touched -- this is the whole point');
+    assert.ok(!('/main/2/mute' in byAddress), 'sub bus mute never touched -- avoids the mainlink trap');
+    assert.ok(!('/mtx/2/mute' in byAddress), 'matrix bus mute never touched');
+  } finally {
+    wing.close(); srv.close();
+  }
+});
+
+test('LiveWing.unmuteAll turns off every source switch and unmutes every bus when auxChannel is set', async () => {
+  const srv = fakeConsole();
+  await srv.ready;
+  const wing = makeWing({ mode: 'live', wing: { host: '127.0.0.1', port: srv.boundPort() }, testSignal: { auxChannel: 1 } });
+  try {
+    await wing.ready;
+    await wing.unmuteAll(buses);
+    await wait(100);
+
+    const byAddress = Object.fromEntries(srv.received.map((m) => [m.address, m.args[0]]));
+    assert.equal(byAddress['/aux/1/main/1/on'], 0);
+    assert.equal(byAddress['/aux/1/main/2/on'], 0);
+    assert.equal(byAddress['/aux/1/send/MX2/on'], 0);
+    assert.equal(byAddress['/main/1/mute'], 0, 'still defensively unmutes bus masters');
+    assert.equal(byAddress['/main/2/mute'], 0);
+    assert.equal(byAddress['/mtx/2/mute'], 0);
+  } finally {
+    wing.close(); srv.close();
+  }
+});
+
 test('LiveWing.applyTuning writes delay and one filter block per EQ band', async () => {
   const srv = fakeConsole();
   await srv.ready;
@@ -196,7 +242,9 @@ test('LiveWing.applyTuning writes delay and one filter block per EQ band', async
     // OSC 'f' args are 32-bit floats — a value like 1.4 round-trips with
     // float32 rounding error, so compare with tolerance, not exact equality.
     const close = (a, b) => Math.abs(a - b) < 1e-4;
-    assert.ok(close(byAddress['/main/1/delay'], 12.5));
+    assert.ok(close(byAddress['/main/1/dly/dly'], 12.5), 'delay value written to /dly/dly (ms)');
+    assert.equal(byAddress['/main/1/dly/mode'], 'MS', 'delay units forced to milliseconds');
+    assert.equal(byAddress['/main/1/dly/on'], 1, 'delay enabled');
     assert.ok(close(byAddress['/main/1/eq/1f'], 100));
     assert.ok(close(byAddress['/main/1/eq/1g'], -3));
     assert.ok(close(byAddress['/main/1/eq/1q'], 1.4));

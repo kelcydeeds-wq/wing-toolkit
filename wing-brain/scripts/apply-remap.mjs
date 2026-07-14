@@ -113,8 +113,10 @@ export async function copyChannel(transport, move, { execute, timeoutMs, clearSo
   }
 
   for (const w of writes) transport.send(w.address, [readValue(w.value)]);
-  for (const dca of references?.dca || []) transport.send(`/ch/${to}/grp/dca/${dca}`, [1]);
-  for (const grp of references?.muteGroups || []) transport.send(`/ch/${to}/grp/mute/${grp}`, [1]);
+  // DCA + mute-group membership travel automatically: `/ch/N/tags` is a leaf in
+  // the channel strip, so it was read from the source above and is retargeted +
+  // written in the loop just above (confirmed model, church 2026-07-14). The old
+  // per-index `/ch/N/grp/dca/K` sends were removed — those addresses don't exist.
   for (const s of references?.sends || []) {
     transport.send(`/ch/${to}/send/${s.bus}/on`, [1]);
     if (s.level !== null && s.level !== undefined) transport.send(`/ch/${to}/send/${s.bus}/lvl`, [s.level]);
