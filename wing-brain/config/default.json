@@ -5,8 +5,14 @@
   },
   "wing": {
     "host": "192.168.1.50",
-    "port": 2223,
-    "oscillatorChannel": 39
+    "port": 2223
+  },
+  "testSignal": {
+    "comment": "Unconfirmed -- see docs/DECISIONS.md 'routing model' entry. Either the PC's USB sweep playback is physically wired into one console input (injectionChannelGrp/Num), or the Wing has its own OSC-controllable generator (source: wing_oscillator) -- never checked which. confirmed must be true before live injection is allowed.",
+    "source": "usb_sweep",
+    "injectionChannelGrp": null,
+    "injectionChannelNum": null,
+    "confirmed": false
   },
   "audio": {
     "sampleRate": 48000,
@@ -31,156 +37,99 @@
       "minSnrDb": 12
     }
   },
-  "outputs": [
+  "buses": [
     {
-      "id": "main_l",
-      "label": "Main L",
+      "id": "mains",
+      "label": "Mains",
       "role": "main",
-      "enabled": true,
-      "wing": {
-        "type": "main",
-        "num": 1,
-        "TODO": "confirm at audit"
-      },
-      "band": [
-        40,
-        16000
-      ],
-      "sources": [
-        "main_l"
-      ]
-    },
-    {
-      "id": "main_r",
-      "label": "Main R",
-      "role": "main",
-      "enabled": true,
-      "wing": {
-        "type": "main",
-        "num": 2,
-        "TODO": "confirm at audit"
-      },
-      "band": [
-        40,
-        16000
-      ],
-      "sources": [
-        "main_r"
-      ]
+      "stereo": true,
+      "wing": { "type": "main", "num": 1, "confirmed": false },
+      "band": [40, 16000],
+      "sweepTrimDb": 0
     },
     {
       "id": "sub",
-      "label": "Subs",
+      "label": "Sub",
       "role": "sub",
-      "enabled": true,
-      "wing": {
-        "type": "main",
-        "num": 3,
-        "TODO": "confirm at audit"
-      },
-      "band": [
-        25,
-        120
-      ],
-      "sources": [
-        "sub"
-      ],
+      "stereo": false,
+      "wing": { "type": "main", "num": 3, "confirmed": false },
+      "band": [25, 120],
       "sweepTrimDb": -6
     },
     {
-      "id": "fill_sides",
-      "label": "Side fills (L+R shared)",
+      "id": "center_fill",
+      "label": "Center Fill",
       "role": "fill",
+      "stereo": false,
+      "wing": { "type": "mtx", "num": 2, "confirmed": false },
+      "band": [80, 16000],
+      "sweepTrimDb": 0,
+      "alignTo": "mains",
+      "alignPositions": ["p1"]
+    },
+    {
+      "id": "side_fills",
+      "label": "Side Fills",
+      "role": "fill",
+      "stereo": false,
+      "wing": { "type": "mtx", "num": 1, "confirmed": false },
+      "band": [80, 16000],
+      "sweepTrimDb": 0,
+      "alignTo": "mains",
+      "alignPositions": ["p2", "p3"]
+    }
+  ],
+  "physicalOutputs": [
+    {
+      "id": "main_l_out",
+      "label": "Main L",
+      "sourceBusId": "mains",
+      "side": "L",
+      "speakerId": "main_l",
       "enabled": true,
-      "wing": {
-        "type": "mtx",
-        "num": 1,
-        "TODO": "confirm matrix number at audit"
-      },
-      "band": [
-        80,
-        16000
-      ],
-      "sources": [
-        "fill_l",
-        "fill_r"
-      ],
-      "alignTo": "mains",
-      "alignPositions": [
-        "p2",
-        "p3"
-      ]
+      "wing": { "grp": null, "num": null, "confirmed": false }
     },
     {
-      "id": "fill_c",
-      "label": "Center fill",
-      "role": "fill",
+      "id": "main_r_out",
+      "label": "Main R",
+      "sourceBusId": "mains",
+      "side": "R",
+      "speakerId": "main_r",
       "enabled": true,
-      "wing": {
-        "type": "mtx",
-        "num": 2,
-        "TODO": "confirm matrix number at audit"
-      },
-      "band": [
-        80,
-        16000
-      ],
-      "sources": [
-        "fill_c"
-      ],
-      "alignTo": "mains",
-      "alignPositions": [
-        "p1"
-      ]
+      "wing": { "grp": null, "num": null, "confirmed": false }
     },
     {
-      "id": "fill_ub",
-      "label": "Under-balcony fills (future)",
-      "role": "fill",
-      "enabled": false,
-      "wing": {
-        "type": "mtx",
-        "num": 3,
-        "TODO": "assign when installed"
-      },
-      "band": [
-        100,
-        16000
-      ],
-      "sources": [
-        "fill_ub_l",
-        "fill_ub_c",
-        "fill_ub_r"
-      ],
-      "alignTo": "mains",
-      "alignPositions": [
-        "p5",
-        "p6"
-      ]
+      "id": "sub_out",
+      "label": "Sub",
+      "sourceBusId": "sub",
+      "side": "mono",
+      "speakerId": "sub",
+      "enabled": true,
+      "wing": { "grp": null, "num": null, "confirmed": false }
     },
     {
-      "id": "fill_balc",
-      "label": "Balcony fills (future)",
-      "role": "fill",
-      "enabled": false,
-      "wing": {
-        "type": "mtx",
-        "num": 4,
-        "TODO": "assign when installed"
-      },
-      "band": [
-        100,
-        16000
-      ],
-      "sources": [
-        "fill_balc_l",
-        "fill_balc_r"
-      ],
-      "alignTo": "mains",
-      "alignPositions": [
-        "p7",
-        "p8"
-      ]
+      "id": "center_fill_out",
+      "label": "Center Fill",
+      "sourceBusId": "center_fill",
+      "side": "mono",
+      "speakerId": "fill_c",
+      "enabled": true,
+      "wing": { "grp": null, "num": null, "confirmed": false }
+    },
+    {
+      "id": "side_fills_out",
+      "label": "Side Fills",
+      "sourceBusId": "side_fills",
+      "side": "mono",
+      "enabled": true,
+      "wing": { "grp": null, "num": null, "confirmed": false },
+      "sharedDrivers": {
+        "count": 2,
+        "drivers": [
+          { "label": "Side L", "speakerId": "fill_l" },
+          { "label": "Side R", "speakerId": "fill_r" }
+        ]
+      }
     }
   ],
   "guardrails": {

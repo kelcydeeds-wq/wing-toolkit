@@ -25,11 +25,11 @@ function populatedSession(dataDir = TMP_DATA_DIR) {
   session.mode = 'full';
   session.positions = room.positions.filter((p) => p.weight > 0);
   const freqs = Array.from({ length: 32 }, (_, i) => 20 * Math.pow(1000, i / 31));
-  for (const output of config.outputs.filter((o) => o.enabled !== false)) {
+  for (const bus of config.buses) {
     for (const pos of session.positions) {
       session.results.push({
         positionId: pos.id, positionWeight: pos.weight, zone: pos.zone,
-        outputId: output.id, delayMs: 20, confidence: 12, polarity: 1,
+        outputId: bus.id, delayMs: 20, confidence: 12, polarity: 1,
         levelDbfs: -20, snrDb: 25, clipped: false,
         freqs, magDb: freqs.map(() => 0)
       });
@@ -43,7 +43,7 @@ function populatedSession(dataDir = TMP_DATA_DIR) {
 test('buildRecommendations attaches a labeled per-position curve for each output', () => {
   const session = populatedSession();
   const rec = session.buildRecommendations();
-  for (const output of config.outputs.filter((o) => o.enabled !== false)) {
+  for (const output of config.buses) {
     const o = rec.perOutput[output.id];
     assert.ok(o, `missing perOutput entry for ${output.id}`);
     assert.equal(o.positions.length, session.positions.length);

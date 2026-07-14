@@ -215,6 +215,18 @@
     </div>
   </section>
 
+  <!-- SHARED-DRIVER WIZARD -->
+  <section id="wizardView" class="hidden">
+    <div class="card">
+      <h2 id="wizardTitle">Isolate driver</h2>
+      <p id="wizardInstruction" style="font-size:16px; line-height:1.5"></p>
+      <div id="wizardConfirmRow" class="hidden">
+        <p style="color:var(--dim); font-size:14px; margin:14px 0 8px" id="wizardConfirmQuestion"></p>
+        <div class="row"><button class="secondary" id="wizardNo">No</button><button class="green" id="wizardYes">Yes</button></div>
+      </div>
+    </div>
+  </section>
+
   <!-- REVIEW -->
   <section id="reviewView" class="hidden"></section>
 
@@ -328,7 +340,7 @@ function fmtAlertReadCounts(counts){
 function setStatus(t, cls){ const s=$('status'); if(!s) return; s.textContent=t; s.className=cls||''; }
 
 function show(id){
-  for (const v of ['home','sessionView','reviewView','verifyView','preflightView','settingsView']) $(v).classList.add('hidden');
+  for (const v of ['home','sessionView','wizardView','reviewView','verifyView','preflightView','settingsView']) $(v).classList.add('hidden');
   $(id).classList.remove('hidden');
 }
 
@@ -390,7 +402,7 @@ function render(){
     return;
   }
 
-  $('exitBtn').classList.toggle('hidden', !session || session.state === 'idle' || session.state === 'preflight');
+  $('exitBtn').classList.toggle('hidden', !session || ['idle', 'preflight', 'wizard'].includes(session.state));
 
   if (session?.state === 'preflight') {
     show('preflightView');
@@ -416,6 +428,8 @@ function render(){
     }
   }
 
+  if (session.state === 'wizard') { renderWizard(); show('wizardView'); return; }
+
   if (session.state === 'review') { renderReview(); show('reviewView');
     fab.appendChild(mkBtn('APPLY TO CONSOLE','big amber',()=>confirm('Write recommended EQ + delays to the Wing?')&&send({action:'apply'})));
     if (session.currentRecordId) fab.appendChild(mkLink('Download results (JSON)','secondary',`/api/sessions/${session.currentRecordId}`));
@@ -438,6 +452,35 @@ function setStatusDone(){
     el.insertAdjacentHTML('afterbegin',
       `<div class="card"><h2>Applied</h2><p class="ok">Tuning written to console. A/B against the saved baseline scene and trust your ears for the final call.</p></div>`);
   }
+}
+
+/** Shared-driver isolation wizard (routing model section 3). Server drives
+ *  the state machine; this just reflects session.wizard and sends the two
+ *  actions (wizard_continue / wizard_confirm) the operator can take. */
+function renderWizard(){
+  const w = session.wizard; if (!w) return;
+  $('wizardTitle').textContent = w.label;
+  const fab = $('fabInner'); fab.innerHTML = '';
+  $('wizardConfirmRow').classList.toggle('hidden', w.step !== 'confirm');
+
+  if (w.isCombinedStep) {
+    $('wizardInstruction').textContent = w.step === 'instruct'
+      ? `Reconnect both (${w.allDriverLabels.join(' and ')}). Press Continue.`
+      : `Playing a tone through both drivers together…`;
+    $('wizardConfirmQuestion').textContent = `Did you hear BOTH ${w.allDriverLabels.join(' and ')}?`;
+  } else {
+    const others = w.allDriverLabels.filter((l) => l !== w.currentDriverLabel);
+    $('wizardInstruction').textContent = w.step === 'instruct'
+      ? `Unplug ${others.join(', ')}, leave ${w.currentDriverLabel} connected. Press Continue.`
+      : `Playing a confidence tone…`;
+    $('wizardConfirmQuestion').textContent = `Did you hear ONLY ${w.currentDriverLabel}?`;
+  }
+
+  if (w.step === 'instruct') {
+    fab.appendChild(mkBtn('CONTINUE', 'big green', () => send({ action: 'wizard_continue' })));
+  }
+  $('wizardYes').onclick = () => send({ action: 'wizard_confirm', heard: true });
+  $('wizardNo').onclick = () => send({ action: 'wizard_confirm', heard: false });
 }
 
 function renderReview(){
@@ -478,6 +521,20 @@ function renderReview(){
     el.insertAdjacentHTML('beforeend', `<div class="card"><h2>Zones vs main floor</h2>
       <table><tr><th>Zone</th><th style="text-align:right">Low</th><th style="text-align:right">Mid</th><th style="text-align:right">High</th></tr>${zr}</table>
       <p style="color:var(--dim);font-size:13px;margin:8px 0 0">Zone differences aren't fixed by system EQ — they're fill speaker alignment data. Main floor drives the correction.</p></div>`);
+  }
+
+  // Shared-driver health (wizard individual-driver comparison) — truth-telling,
+  // never fed into correction, which always uses the combined measurement.
+  if (rec.driverHealth?.length) {
+    let dh = '';
+    for (const h of rec.driverHealth) {
+      const cls = h.flags.length ? 'warn' : 'ok';
+      dh += `<li class="${cls}"><span>${esc(h.driverA)} vs ${esc(h.driverB)}</span>
+        <span>${h.flags.length ? h.flags.join('; ') : `OK — level Δ${h.levelDiffDb} dB, response Δ${h.maxResponseDevDb} dB`}</span></li>`;
+    }
+    el.insertAdjacentHTML('beforeend', `<div class="card"><h2>Shared-driver health</h2>
+      <p style="color:var(--dim);font-size:13px;margin:0 0 8px">Individual-driver checks from the isolation wizard — informational only, correction always uses the combined measurement.</p>
+      <ul class="poslist">${dh}</ul></div>`);
   }
 
   // Per-output EQ
@@ -776,30 +833,61 @@ const GUARDRAIL_FIELDS = [
   'maxBoostQ','nullVarianceDb','minFilterHz','noBoostBelowHz','minFilterSpacingOct','tiltOnlyAboveHz'
 ];
 
-let outputsDraft = null; // working copy of C.outputs while the settings page is open
+let busesDraft = null;           // working copy of C.buses while the settings page is open
+let physicalOutputsDraft = null; // working copy of C.physicalOutputs while the settings page is open
+let lastDiscoveredOutputs = null; // most recent /api/discover-outputs result, for the suggestion UI
 
 function renderSettings(){
   const C = appConfig.config, R = appConfig.room;
   dirtyCards.clear();
-  outputsDraft = structuredClone(C.outputs);
+  busesDraft = structuredClone(C.buses);
+  physicalOutputsDraft = structuredClone(C.physicalOutputs);
   const el = $('settingsView');
 
   const frow = (label, inner) => `<div class="frow"><label>${label}</label>${inner}</div>`;
   const num = (id, value, attrs = '') => `<input type="number" id="${id}" value="${value}" ${attrs}>`;
   const text = (id, value) => `<input type="text" id="${id}" value="${esc(value)}">`;
 
-  const outputRow = (o, i) => `
+  const busRow = (b, i) => `
     <tr data-i="${i}">
-      <td><input type="checkbox" class="o_en" ${o.enabled !== false ? 'checked' : ''}></td>
-      <td><input type="text" class="o_label" value="${esc(o.label)}"></td>
-      <td><select class="o_type">
-        <option value="main" ${o.wing?.type !== 'mtx' ? 'selected' : ''}>main</option>
-        <option value="mtx" ${o.wing?.type === 'mtx' ? 'selected' : ''}>mtx</option>
+      <td><input type="text" class="b_label" value="${esc(b.label)}"></td>
+      <td><select class="b_role">
+        <option value="main" ${b.role==='main'?'selected':''}>main</option>
+        <option value="sub" ${b.role==='sub'?'selected':''}>sub</option>
+        <option value="fill" ${b.role==='fill'?'selected':''}>fill</option>
       </select></td>
-      <td><input type="number" class="o_num" value="${o.wing?.num ?? 1}" min="1" max="64"></td>
-      <td><input type="number" class="o_lo" value="${o.band?.[0] ?? 20}" min="10" max="24000"></td>
-      <td><input type="number" class="o_hi" value="${o.band?.[1] ?? 20000}" min="10" max="24000"></td>
-      <td><input type="number" class="o_trim" value="${o.sweepTrimDb ?? 0}" min="-60" max="0" step="1"></td>
+      <td><input type="checkbox" class="b_stereo" ${b.stereo ? 'checked' : ''}></td>
+      <td><select class="b_type">
+        <option value="main" ${b.wing?.type !== 'mtx' ? 'selected' : ''}>main</option>
+        <option value="mtx" ${b.wing?.type === 'mtx' ? 'selected' : ''}>mtx</option>
+      </select></td>
+      <td><input type="number" class="b_num" value="${b.wing?.num ?? 1}" min="1" max="64"></td>
+      <td><input type="checkbox" class="b_confirmed" ${b.wing?.confirmed ? 'checked' : ''}></td>
+      <td><input type="number" class="b_lo" value="${b.band?.[0] ?? 20}" min="10" max="24000"></td>
+      <td><input type="number" class="b_hi" value="${b.band?.[1] ?? 20000}" min="10" max="24000"></td>
+      <td><input type="number" class="b_trim" value="${b.sweepTrimDb ?? 0}" min="-60" max="0" step="1"></td>
+    </tr>`;
+
+  const speakerOptions = (selected) => `<option value="">—</option>` + (R.speakers || []).map((s) =>
+    `<option value="${esc(s.id)}" ${s.id === selected ? 'selected' : ''}>${esc(s.id)}</option>`).join('');
+  const busOptions = (selected) => busesDraft.map((b) =>
+    `<option value="${esc(b.id)}" ${b.id === selected ? 'selected' : ''}>${esc(b.label)}</option>`).join('');
+
+  const physicalOutputRow = (o, i) => `
+    <tr data-i="${i}">
+      <td><input type="checkbox" class="p_en" ${o.enabled !== false ? 'checked' : ''}></td>
+      <td><input type="text" class="p_label" value="${esc(o.label)}"></td>
+      <td><select class="p_bus">${busOptions(o.sourceBusId)}</select></td>
+      <td><select class="p_side">
+        <option value="L" ${o.side==='L'?'selected':''}>L</option>
+        <option value="R" ${o.side==='R'?'selected':''}>R</option>
+        <option value="mono" ${o.side==='mono'?'selected':''}>mono</option>
+      </select></td>
+      <td><select class="p_speaker">${speakerOptions(o.speakerId)}</select></td>
+      <td><input type="text" class="p_grp" value="${esc(o.wing?.grp ?? '')}" placeholder="?" style="width:44px"></td>
+      <td><input type="number" class="p_num" value="${o.wing?.num ?? ''}" placeholder="?" style="width:56px"></td>
+      <td><input type="checkbox" class="p_confirmed" ${o.wing?.confirmed ? 'checked' : ''}></td>
+      <td style="color:var(--dim);font-size:12px">${o.sharedDrivers ? `${o.sharedDrivers.count}× (${o.sharedDrivers.drivers.map(d=>esc(d.label)).join('/')})` : '—'}</td>
     </tr>`;
 
   const curves = Object.values(C.targetCurves);
@@ -836,15 +924,36 @@ function renderSettings(){
     </div>
 
     <div class="card">
-      <h2>Outputs</h2>
-      <div class="otable"><table id="outputsTable">
-        <tr><th>On</th><th>Label</th><th>Route</th><th>#</th><th>Lo Hz</th><th>Hi Hz</th><th>Trim dB</th></tr>
-        ${outputsDraft.map(outputRow).join('')}
+      <h2>Buses <span style="text-transform:none;letter-spacing:0">— live modules control only this layer</span></h2>
+      <p class="hint">Logical mix buses. Muting/EQ'ing "Mains" sends one command to the stereo Main bus — both sides move together. Numbers marked unconfirmed have never been verified against the real console.</p>
+      <div class="otable"><table id="busesTable">
+        <tr><th>Label</th><th>Role</th><th>Stereo</th><th>Type</th><th>#</th><th>OK?</th><th>Lo Hz</th><th>Hi Hz</th><th>Trim dB</th></tr>
+        ${busesDraft.map(busRow).join('')}
+      </table></div>
+      <div class="cardfoot"><button class="small" id="save_buses" disabled>Save</button></div>
+    </div>
+
+    <div class="card">
+      <h2>Physical Outputs <span style="text-transform:none;letter-spacing:0">— dumb patches only</span></h2>
+      <p class="hint">Each output socket in use, and which bus feeds it. No EQ/delay is ever written here — correction always targets the bus above. "Shared" outputs (e.g. one Side Fills output driving two boxes) get a guided isolation wizard during Full Tune.</p>
+      <div class="otable"><table id="physicalOutputsTable">
+        <tr><th>On</th><th>Label</th><th>Source bus</th><th>Side</th><th>Speaker</th><th>Grp</th><th>#</th><th>OK?</th><th>Shared</th></tr>
+        ${physicalOutputsDraft.map(physicalOutputRow).join('')}
       </table></div>
       <div class="cardfoot">
-        <button class="small secondary" id="btnAddOutput">+ Add output</button>
-        <button class="small" id="save_outputs" disabled>Save</button>
+        <span id="discoverResult" style="font-size:12px;color:var(--dim);flex:1"></span>
+        <button class="small secondary" id="btnDiscoverOutputs">Run output discovery</button>
+        <button class="small" id="save_physical_outputs" disabled>Save</button>
       </div>
+      <p class="hint" style="margin-top:14px">Discovery reads bus names/mute state live from the console (read-only) — it doesn't know physical patching, only bus identity. Review its suggestions, don't blindly accept.</p>
+      <div id="discoverySuggestions"></div>
+    </div>
+
+    <div class="card">
+      <h2>Patch Safety</h2>
+      <p class="hint">If a test-signal injection is ever left mid-repatch (crash, lost connection), every affected output gets recorded here until restored. Safe to press any time, including with nothing pending.</p>
+      <div class="frow"><label>Pending patches</label><span id="pendingPatchesStatus" style="font-size:13px">checking…</span></div>
+      <div class="cardfoot"><button class="small secondary" id="btnRestorePatches">Restore All Patches</button></div>
     </div>
 
     <div class="card">
@@ -919,7 +1028,10 @@ function renderSettings(){
   wire('console', ['set_wing_host', 'set_wing_port']);
   document.querySelectorAll('input[name=set_mode]').forEach((r) => r.addEventListener('change', () => markDirty('console')));
   wire('audio', ['set_in_dev', 'set_out_dev', 'set_ref_ch', 'set_mic_ch', 'set_sweep_s', 'set_sweep_lvl']);
-  $('outputsTable').addEventListener('input', () => markDirty('outputs'));
+  $('busesTable').addEventListener('input', () => markDirty('buses'));
+  $('busesTable').addEventListener('change', () => markDirty('buses'));
+  $('physicalOutputsTable').addEventListener('input', () => markDirty('physical_outputs'));
+  $('physicalOutputsTable').addEventListener('change', () => markDirty('physical_outputs'));
   wire('tuning', ['set_curve', 'set_fillprec', 'gr_requireApplyTap', ...GUARDRAIL_FIELDS.map((k) => `gr_${k}`)]);
   $('set_curve').addEventListener('change', () => {
     markDirty('tuning');
@@ -965,32 +1077,81 @@ function renderSettings(){
     sweep: { seconds: Number($('set_sweep_s').value), levelDbfs: Number($('set_sweep_lvl').value) }
   }}});
 
-  /* --- card 3: outputs --- */
-  $('btnAddOutput').onclick = () => {
-    const usedIds = new Set(outputsDraft.map((o) => o.id));
-    let n = 1; while (usedIds.has(`fill_new_${n}`)) n++;
-    const usedMtx = outputsDraft.filter((o) => o.wing?.type === 'mtx').map((o) => o.wing.num);
-    let mtxNum = 1; while (usedMtx.includes(mtxNum)) mtxNum++;
-    const fresh = { id: `fill_new_${n}`, label: `New fill ${n}`, role: 'fill', enabled: false,
-      wing: { type: 'mtx', num: mtxNum, TODO: 'assign at console' }, band: [80, 16000], sweepTrimDb: 0 };
-    outputsDraft.push(fresh);
-    $('outputsTable').insertAdjacentHTML('beforeend', outputRow(fresh, outputsDraft.length - 1));
-    markDirty('outputs');
-  };
-  $('save_outputs').onclick = () => {
-    const rows = [...document.querySelectorAll('#outputsTable tr[data-i]')];
-    const outputs = rows.map((tr) => {
-      const orig = outputsDraft[Number(tr.dataset.i)];
+  /* --- card 3a: buses --- */
+  $('save_buses').onclick = () => {
+    const rows = [...document.querySelectorAll('#busesTable tr[data-i]')];
+    const buses = rows.map((tr) => {
+      const orig = busesDraft[Number(tr.dataset.i)];
       const q = (cls) => tr.querySelector(`.${cls}`);
       return { ...orig,
-        enabled: q('o_en').checked,
-        label: q('o_label').value.trim(),
-        wing: { ...orig.wing, type: q('o_type').value, num: Number(q('o_num').value) },
-        band: [Number(q('o_lo').value), Number(q('o_hi').value)],
-        sweepTrimDb: Number(q('o_trim').value)
+        label: q('b_label').value.trim(),
+        role: q('b_role').value,
+        stereo: q('b_stereo').checked,
+        wing: { ...orig.wing, type: q('b_type').value, num: Number(q('b_num').value), confirmed: q('b_confirmed').checked },
+        band: [Number(q('b_lo').value), Number(q('b_hi').value)],
+        sweepTrimDb: Number(q('b_trim').value)
       };
     });
-    return saveConfig('outputs', { config: { outputs } });
+    return saveConfig('buses', { config: { buses } });
+  };
+
+  /* --- card 3b: physical outputs --- */
+  $('save_physical_outputs').onclick = () => {
+    const rows = [...document.querySelectorAll('#physicalOutputsTable tr[data-i]')];
+    const physicalOutputs = rows.map((tr) => {
+      const orig = physicalOutputsDraft[Number(tr.dataset.i)];
+      const q = (cls) => tr.querySelector(`.${cls}`);
+      const grp = q('p_grp').value.trim();
+      const numVal = q('p_num').value.trim();
+      return { ...orig,
+        enabled: q('p_en').checked,
+        label: q('p_label').value.trim(),
+        sourceBusId: q('p_bus').value,
+        side: q('p_side').value,
+        speakerId: q('p_speaker').value || undefined,
+        wing: { grp: grp || null, num: numVal ? Number(numVal) : null, confirmed: q('p_confirmed').checked }
+      };
+    });
+    return saveConfig('physical_outputs', { config: { physicalOutputs } });
+  };
+  $('btnDiscoverOutputs').onclick = async () => {
+    const out = $('discoverResult');
+    out.style.color = 'var(--dim)'; out.textContent = 'querying console…';
+    try {
+      const res = await fetch('/api/discover-outputs', { method: 'POST' });
+      const body = await res.json();
+      if (!res.ok || !body.ok) { out.style.color = 'var(--red)'; out.textContent = body.error || 'discovery failed'; return; }
+      lastDiscoveredOutputs = body.rows;
+      const answered = body.rows.filter((r) => r.name !== null);
+      out.style.color = answered.length ? 'var(--green)' : 'var(--amber)';
+      out.textContent = `${answered.length}/${body.rows.length} answered`;
+      $('discoverySuggestions').innerHTML = `<table style="margin-top:10px">
+        <tr><th>Kind</th><th>#</th><th>Console name</th><th>Mute</th></tr>
+        ${body.rows.map((r) => `<tr><td>${r.kind}</td><td class="num">${r.index}</td>
+          <td>${esc(r.name ?? '(no reply)')}</td><td>${r.mute===null?'?':(r.mute?'muted':'live')}</td></tr>`).join('')}
+      </table>
+      <p class="hint">Match these names against your bus labels above, then hand-set each bus's Type/# to match and check "OK?" once confirmed. This does not auto-fill — review before trusting it.</p>`;
+    } catch (err) { out.style.color = 'var(--red)'; out.textContent = String(err); }
+  };
+
+  /* --- card 3c: patch safety --- */
+  (async () => {
+    try {
+      const res = await fetch('/api/patches/status');
+      const body = await res.json();
+      const el = $('pendingPatchesStatus');
+      el.textContent = body.pending ? 'PENDING — restore before starting a tune' : 'none';
+      el.style.color = body.pending ? 'var(--red)' : 'var(--green)';
+    } catch { $('pendingPatchesStatus').textContent = 'unknown'; }
+  })();
+  $('btnRestorePatches').onclick = async () => {
+    if (!confirm('Restore every physical output to its original patch source?')) return;
+    try {
+      const res = await fetch('/api/patches/restore-all', { method: 'POST' });
+      const body = await res.json();
+      showToast(body.restored?.length ? `Restored ${body.restored.length} patch(es)` : 'Nothing to restore', 'ok');
+      $('pendingPatchesStatus').textContent = 'none'; $('pendingPatchesStatus').style.color = 'var(--green)';
+    } catch (err) { showToast(String(err), 'warn'); }
   };
 
   /* --- card 4: tuning --- */

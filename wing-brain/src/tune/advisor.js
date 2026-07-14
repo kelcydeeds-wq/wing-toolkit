@@ -34,7 +34,7 @@ export function buildAnalysisPayload({ config, room, results, localRec }) {
   };
 
   const outputs = {};
-  for (const output of config.outputs) {
+  for (const output of config.buses) {
     const rs = results.filter((r) => r.outputId === output.id);
     if (!rs.length) continue;
     const weighted = rs.filter((r) => r.positionWeight > 0);
@@ -139,7 +139,7 @@ export function validate(advice, config) {
   const g = config.guardrails;
   const out = { outputs: {}, delays: advice.delays || {}, summary: advice.summary || '',
                 warnings: advice.warnings || [] };
-  for (const output of config.outputs) {
+  for (const output of config.buses) {
     const a = advice.outputs?.[output.id];
     if (!a) continue;
     const band = output.band || [40, 16000];

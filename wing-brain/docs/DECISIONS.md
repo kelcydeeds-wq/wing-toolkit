@@ -3,6 +3,126 @@
 Running log of judgment calls made during autonomous work runs, so they can be
 reviewed and reversed if wrong.
 
+## 2026-07-14 — two-layer routing model, per-driver test injection, shared-driver wizard
+
+Comprehensive rework requested with an explicit constraint: **run OSC
+discovery and show real bus/output numbers before hardcoding anything.**
+The console was unreachable from this session (verified by actually trying
+`identify-outputs.mjs` against the cached IP, not just assuming) — so
+everything below is architecture built mock-first with placeholder numbers,
+per the user's own choice when given that tradeoff explicitly.
+
+- **`config.outputs[]` split into two layers**: `config.buses[]` (what live
+  modules — mutes, loudness, EQ, delay — control) and
+  `config.physicalOutputs[]` (dumb patches, each pointing at a `sourceBusId`).
+  A stereo bus like "mains" now has ONE Wing address feeding TWO physical
+  outputs (`main_l_out`, `main_r_out`), matching how a Wing stereo bus is
+  actually addressed (one number, console-side L/R linking) — this is a real
+  behavior change from the old model, which treated Main L and Main R as two
+  independent mono outputs measured and corrected separately.
+- **Both layers ship with `wing.confirmed: false`** (buses) and
+  `wing.grp/num: null, confirmed: false` (physical outputs) — nothing here
+  is a guess dressed up as fact. `sub`'s bus number (3) and `side_fills`'s
+  matrix number (1) are carried over from the OLD flat config as a
+  starting point, not re-derived from anything new.
+- **Correction pooling trick**: measurement happens per PHYSICAL OUTPUT
+  (so per-driver geometry/health can be checked), but every result row is
+  tagged `outputId: bus.id` — the BUS id, not the physical output's own id.
+  `dsp/tune.js`'s `spatialAverage`/`recommendEQ`/`recommendDelays` were
+  **not touched at all** — they already average every row sharing one
+  `outputId`, and don't care whether those rows came from different mic
+  positions, different physical outputs sharing a bus (stereo mains), or
+  both at once. This was the single highest-leverage design choice in this
+  whole feature — it turned "how do I combine two speakers' measurements
+  into one bus correction" into zero new code.
+- **`src/wing/patch-manager.js`** (new): the defensive snapshot/restore
+  safety net for per-driver test-signal injection. Every repatch snapshots
+  the ORIGINAL patch source to `data/patch-snapshot.json` before touching
+  anything, gates live-mode writes behind `wing.confirmed` (per output) AND
+  `testSignal.confirmed` (global) AND a successful read of the original
+  source — refuses to repatch anything it can't prove it can restore.
+  `restoreAll()` is a synchronous, disk-driven escape hatch (works even if
+  the in-memory config that made the repatch is long gone) wired to
+  SIGINT/uncaughtException handlers AND a UI button
+  (`POST /api/patches/restore-all`). Deliberately NOT built on this
+  project's usual AbortController pattern (see `record-osc.mjs`) — that's
+  for cooperative cancellation the caller opts into; this needs to fire on
+  involuntary termination too, which only a real process signal handler
+  catches.
+- **Injection failure degrades to the pre-existing solo/mute-only
+  measurement path, not a hard error.** Since every physical output ships
+  with `wing.grp/num: null`, `injectTestSignal()` always throws today (by
+  design — "no address configured" is checked before the confirmed gates,
+  in both mock and live mode) and `measureOnePhysicalOutput()` catches that
+  and proceeds exactly like the old code always did. Practically: shipping
+  this doesn't change today's live-measurement behavior at all until
+  someone fills in real `grp`/`num` values and flips `confirmed: true` —
+  the new injection path is fully opt-in.
+- **Physical-output patch OSC addressing
+  (`physicalOutputPatchFields()` in `wing-schema.mjs`) is a best-effort
+  guess**, mirroring the confirmed channel-input pattern
+  (`/ch/N/in/conn/grp`+`/in/conn/in`) as `/io/out/<grp>/<n>/conn/grp`+`/conn/in`.
+  Nobody has ever queried the Wing's actual output-patch matrix — this is
+  new ground beyond the mixing-parameter addresses fixed on the 2026-07-10
+  visit. `identify-outputs.mjs --probe-io-out` best-effort-probes it (grp
+  A-D × num 1-8) and reports any replies, but explicitly does not claim
+  silence means the guess is close — only that a reply would be a real
+  signal worth following up on.
+- **Test-signal source is also unconfirmed and left that way on purpose**:
+  `config.testSignal.source` can be `"usb_sweep"` (the existing ESS
+  playback path, physically wired into one console input channel — replaces
+  the old unused `wing.oscillatorChannel` placeholder) or
+  `"wing_oscillator"` (an internal console generator, IF the Wing exposes
+  one over OSC — never checked). The injection layer doesn't care which;
+  it just writes whatever `injectionChannelGrp/Num` config says into the
+  physical output's patch source.
+- **The shared-driver wizard runs at EVERY measurement position, not
+  once per session.** The user's spec describes the instruct/confirm/sweep
+  sequence as something that happens "when System Tune reaches" a
+  shared-driver output — read literally, that's per-position, and that's
+  what got built (confirmed working end-to-end for all 8 real room
+  positions via a live server smoke test). This is the correct literal
+  interpretation but a real operational cost — unplugging/replugging a
+  cable at every one of 8 positions is tedious. Deliberately did NOT
+  simplify this to "wizard runs once, using the verify position" on my own
+  initiative, since that's a workflow tradeoff the user should make, not
+  one I should guess at. Flag this to them; a "once per session" mode
+  would be a small, contained change to `ready()`'s loop if they want it.
+- **Wizard's confidence blip reuses `makeBlip()`** (a sine tone, band-centered
+  via the same `blipForOutput()` helper preflight already uses) rather than
+  building a new pink-noise generator — the spec allowed either ("1-2s pink
+  noise burst or tone"), and a tone is simpler with zero new DSP code.
+- **Driver health comparison** (polarity, level, max response deviation)
+  flags anything beyond ±3 dB / a polarity flip — informational only,
+  stored in `driverHealthReports` and surfaced on the review screen; never
+  read by `buildRecommendations()`, which only ever sees `results` (the
+  bus-tagged combined/normal measurements). Individual driver sweeps
+  (`driverHealthResults`) are structurally incapable of leaking into a
+  correction even by accident, since nothing in `buildRecommendations()`
+  reads that array.
+- **Settings UI ships functional, not polished**: two tables (Buses,
+  Physical Outputs) replacing the old flat Outputs card, a "Run output
+  discovery" button that calls the extended `identify-outputs.mjs` live
+  (via `POST /api/discover-outputs`) and shows console names/mute state
+  for manual cross-referencing — it does NOT auto-fill bus numbers, by
+  design, since blindly trusting a name match is exactly the kind of
+  guessing this whole feature exists to avoid. A "Patch Safety" card
+  exposes pending-patch status and the Restore All Patches button.
+- **End-to-end validated against the real server**, not just unit tests: a
+  disposable script drove a full `start(full)` → wizard → `review` cycle
+  over a websocket against `npm run dev`, across all 8 real room positions,
+  confirming the wizard state machine, injection fallback, driver-health
+  warnings, and Claude-unavailable local-recommender fallback all work
+  together without a single server error. (Also incidentally re-confirmed
+  the mock room model's clipping tendency from the 2026-07-08 preflight fix
+  — sweeps clip under some bus/gain combinations in mock mode. Not a
+  regression from this work, not touched; noted here in case it resurfaces.)
+- **218 tests** (was 191): new `test/patch-manager.test.js` (14, snapshot/
+  restore/safety-gate coverage) and `test/routing-wizard.test.js` (12,
+  wizard state machine + bus-pooling + injection integration), plus every
+  existing test file touching the old `config.outputs` updated to the new
+  schema.
+
 ## 2026-07-13 — Claude judgment layer on the loudness monitor
 
 - **New `src/audio/loudness-advisor.js`**, mirroring `tune/advisor.js`'s

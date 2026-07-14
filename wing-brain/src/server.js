@@ -15,6 +15,7 @@ import { makeOscTransport } from './wing/osc.js';
 import { TuneSession, listSessionHistory } from './tune/session.js';
 import { validateConfig, validateRoomPatch, mergeDeep, writeJsonAtomic } from './config/settings.js';
 import { LoudnessMonitor, listLoudnessHistory, computeSplOffset } from './audio/loudness-monitor.js';
+import { identifyOutputs } from '../scripts/identify-outputs.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
@@ -122,6 +123,34 @@ app.post('/api/loudness/calibrate', (req, res) => {
   res.json({ ok: true, offsetDb: Math.round(offsetDb * 10) / 10, measuredDbfs: Math.round(dbfs * 10) / 10, config });
 });
 
+// Live main/mtx name+mute query (scripts/identify-outputs.mjs) so the Buses
+// Settings card can suggest wing.num values instead of hand-typing them from
+// reading the console. Read-only, safe to call any time.
+app.post('/api/discover-outputs', async (_req, res) => {
+  try {
+    const { rows } = await identifyOutputs({
+      mock: config.mode === 'mock', host: config.wing.host, port: config.wing.port,
+      timeoutMs: 800, matrixCount: 8
+    });
+    res.json({ ok: true, rows });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
+
+/* ------------------------------ Patch safety ------------------------------ */
+
+// "Restore All Patches" escape hatch (routing model section 2) — works
+// regardless of session state, reads straight off the on-disk snapshot.
+app.get('/api/patches/status', (_req, res) => {
+  res.json({ pending: wing.hasPendingPatches ? wing.hasPendingPatches() : false });
+});
+
+app.post('/api/patches/restore-all', (_req, res) => {
+  const restored = session.restoreAllPatches();
+  res.json({ ok: true, restored });
+});
+
 /* ------------------------------ Settings API ----------------------------- */
 
 app.get('/api/config', (_req, res) => {
@@ -181,7 +210,7 @@ app.post('/api/test-wing', async (req, res) => {
     // TODO(church): confirm which info/query address the Wing actually
     // answers; until then, try several candidates — any reply proves the
     // console is reachable and speaking OSC.
-    const candidates = ['/?', '/xinfo', '/info', '/main/lr/config/name'];
+    const candidates = ['/?', '/xinfo', '/info', '/main/1/name'];
     const replies = await Promise.all(candidates.map((a) => transport.get(a, { timeoutMs: 1500 })));
     const hit = replies.findIndex((r) => r !== null);
     if (hit >= 0) {
@@ -219,6 +248,11 @@ wss.on('connection', (ws) => {
         case 'apply':    await session.apply(); break;            // the only console write
         case 'baseline': session.saveBaseline(); break;
         case 'reset':    session.state = 'idle'; broadcast('session', session.snapshot()); break;
+        // Shared-driver measurement wizard (routing model section 3).
+        case 'wizard_continue': await session.wizardContinue(); break;
+        case 'wizard_confirm':  await session.wizardConfirm(!!msg.heard); break;
+        // "Restore All Patches" escape hatch — works regardless of session state.
+        case 'restore_patches': session.restoreAllPatches(); break;
       }
     } catch (err) {
       ws.send(JSON.stringify({ event: 'error', payload: { message: String(err.message || err) } }));
@@ -235,4 +269,8 @@ server.listen(port, () => {
   console.log(`wing-brain tune module [${config.mode.toUpperCase()} mode]`);
   console.log(`  Local:   http://localhost:${port}`);
   for (const a of addrs) console.log(`  Phone:   ${a}`);
+  if (wing.hasPendingPatches && wing.hasPendingPatches()) {
+    console.warn('[server] WARNING: pending patch snapshot found on disk (data/patch-snapshot.json) — ' +
+      'a previous run may have crashed mid-injection. Use "Restore All Patches" in Settings before starting a tune.');
+  }
 });

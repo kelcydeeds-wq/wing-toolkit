@@ -107,31 +107,97 @@ export function validateConfig(config, room) {
     }
   }
 
-  if (!Array.isArray(config.outputs) || config.outputs.length === 0) {
-    bad('outputs: must be a non-empty array');
+  // --- Layer 1: buses. Live modules (mutes, loudness, EQ, delay) operate
+  // ONLY on this layer -- see docs/DECISIONS.md "routing model" entry.
+  const busIds = new Set();
+  if (!Array.isArray(config.buses) || config.buses.length === 0) {
+    bad('buses: must be a non-empty array');
   } else {
-    const seen = new Set();
-    config.outputs.forEach((o, i) => {
-      const at = `outputs[${i}]`;
-      if (!isStr(o?.id)) bad(`${at}.id: must be a non-empty string`);
-      else if (seen.has(o.id)) bad(`${at}.id: duplicate id "${o.id}"`);
-      else seen.add(o.id);
-      if (!isStr(o?.label)) bad(`${at}.label: must be a non-empty string`);
-      if (o?.role !== undefined && !['main', 'sub', 'fill'].includes(o.role)) {
-        bad(`${at}.role: must be main, sub, or fill`);
-      }
-      if (o?.enabled !== undefined && typeof o.enabled !== 'boolean') bad(`${at}.enabled: must be a boolean`);
-      if (!['main', 'mtx'].includes(o?.wing?.type)) bad(`${at}.wing.type: must be "main" or "mtx"`);
-      if (!isInt(o?.wing?.num) || o.wing.num < 1 || o.wing.num > 64) bad(`${at}.wing.num: must be an integer 1-64`);
-      const band = o?.band;
+    config.buses.forEach((b, i) => {
+      const at = `buses[${i}]`;
+      if (!isStr(b?.id)) bad(`${at}.id: must be a non-empty string`);
+      else if (busIds.has(b.id)) bad(`${at}.id: duplicate id "${b.id}"`);
+      else busIds.add(b.id);
+      if (!isStr(b?.label)) bad(`${at}.label: must be a non-empty string`);
+      if (!['main', 'sub', 'fill'].includes(b?.role)) bad(`${at}.role: must be main, sub, or fill`);
+      if (typeof b?.stereo !== 'boolean') bad(`${at}.stereo: must be a boolean`);
+      if (!['main', 'mtx'].includes(b?.wing?.type)) bad(`${at}.wing.type: must be "main" or "mtx"`);
+      if (!isInt(b?.wing?.num) || b.wing.num < 1 || b.wing.num > 64) bad(`${at}.wing.num: must be an integer 1-64`);
+      if (typeof b?.wing?.confirmed !== 'boolean') bad(`${at}.wing.confirmed: must be a boolean`);
+      const band = b?.band;
       if (!Array.isArray(band) || band.length !== 2 || !isNum(band[0]) || !isNum(band[1])
           || band[0] < 10 || band[1] > 24000 || band[0] >= band[1]) {
         bad(`${at}.band: must be [lo, hi] with 10 <= lo < hi <= 24000`);
       }
-      if (o?.sweepTrimDb !== undefined && (!isNum(o.sweepTrimDb) || o.sweepTrimDb < -60 || o.sweepTrimDb > 0)) {
+      if (b?.sweepTrimDb !== undefined && (!isNum(b.sweepTrimDb) || b.sweepTrimDb < -60 || b.sweepTrimDb > 0)) {
         bad(`${at}.sweepTrimDb: must be -60 to 0 dB (trims attenuate, never boost)`);
       }
     });
+  }
+
+  // --- Layer 2: physical outputs. Dumb patches only -- no EQ/delay is ever
+  // written here (enforced by client.js/session.js, not by this validator).
+  if (!Array.isArray(config.physicalOutputs) || config.physicalOutputs.length === 0) {
+    bad('physicalOutputs: must be a non-empty array');
+  } else {
+    const outIds = new Set();
+    const speakerIds = new Set((room?.speakers || []).map((s) => s.id));
+    config.physicalOutputs.forEach((o, i) => {
+      const at = `physicalOutputs[${i}]`;
+      if (!isStr(o?.id)) bad(`${at}.id: must be a non-empty string`);
+      else if (outIds.has(o.id)) bad(`${at}.id: duplicate id "${o.id}"`);
+      else outIds.add(o.id);
+      if (!isStr(o?.label)) bad(`${at}.label: must be a non-empty string`);
+      if (!isStr(o?.sourceBusId)) bad(`${at}.sourceBusId: must be a non-empty string`);
+      else if (busIds.size && !busIds.has(o.sourceBusId)) bad(`${at}.sourceBusId: "${o.sourceBusId}" is not a known bus id`);
+      if (!['L', 'R', 'mono'].includes(o?.side)) bad(`${at}.side: must be "L", "R", or "mono"`);
+      if (o?.enabled !== undefined && typeof o.enabled !== 'boolean') bad(`${at}.enabled: must be a boolean`);
+      if (o?.speakerId !== undefined) {
+        if (!isStr(o.speakerId)) bad(`${at}.speakerId: must be a non-empty string`);
+        else if (room && speakerIds.size && !speakerIds.has(o.speakerId)) bad(`${at}.speakerId: "${o.speakerId}" is not a known room speaker id`);
+      }
+      const w = o?.wing;
+      if (!w || typeof w !== 'object') bad(`${at}.wing: must be an object`);
+      else {
+        if (w.grp !== null && !isStr(w.grp)) bad(`${at}.wing.grp: must be null or a non-empty string`);
+        if (w.num !== null && (!isInt(w.num) || w.num < 1)) bad(`${at}.wing.num: must be null or a positive integer`);
+        if (typeof w.confirmed !== 'boolean') bad(`${at}.wing.confirmed: must be a boolean`);
+      }
+      if (o?.sharedDrivers !== undefined) {
+        const sd = o.sharedDrivers;
+        if (!isInt(sd?.count) || sd.count < 2) bad(`${at}.sharedDrivers.count: must be an integer >= 2`);
+        if (!Array.isArray(sd?.drivers) || sd.drivers.length !== sd?.count) {
+          bad(`${at}.sharedDrivers.drivers: must be an array with length matching count`);
+        } else {
+          sd.drivers.forEach((d, j) => {
+            if (!isStr(d?.label)) bad(`${at}.sharedDrivers.drivers[${j}].label: must be a non-empty string`);
+            if (d?.speakerId !== undefined) {
+              if (!isStr(d.speakerId)) bad(`${at}.sharedDrivers.drivers[${j}].speakerId: must be a non-empty string`);
+              else if (room && speakerIds.size && !speakerIds.has(d.speakerId)) {
+                bad(`${at}.sharedDrivers.drivers[${j}].speakerId: "${d.speakerId}" is not a known room speaker id`);
+              }
+            }
+          });
+        }
+      }
+    });
+  }
+
+  // --- Test signal injection point (per-output test injection, section 2).
+  const ts = config.testSignal;
+  if (!ts || typeof ts !== 'object') {
+    bad('testSignal: must be an object');
+  } else {
+    if (!['usb_sweep', 'wing_oscillator'].includes(ts.source)) {
+      bad('testSignal.source: must be "usb_sweep" or "wing_oscillator"');
+    }
+    if (ts.injectionChannelGrp !== null && !isStr(ts.injectionChannelGrp)) {
+      bad('testSignal.injectionChannelGrp: must be null or a non-empty string');
+    }
+    if (ts.injectionChannelNum !== null && (!isInt(ts.injectionChannelNum) || ts.injectionChannelNum < 1)) {
+      bad('testSignal.injectionChannelNum: must be null or a positive integer');
+    }
+    if (typeof ts.confirmed !== 'boolean') bad('testSignal.confirmed: must be a boolean');
   }
 
   const g = config.guardrails || {};

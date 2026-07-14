@@ -16,31 +16,31 @@ test('validate clamps hostile gains, Q, and filter count to guardrails', () => {
   const hostile = {
     summary: 'x',
     outputs: {
-      main_l: {
+      mains: {
         filters: Array.from({ length: 40 }, (_, i) => ({
           type: 'peq', freq: 100 + i * 5, gainDb: i % 2 ? 40 : -60, q: 100, reason: 'r'.repeat(500)
         })),
         note: 'n'.repeat(1000)
       }
     },
-    delays: { main_l: { addDelayMs: 99999 } }
+    delays: { mains: { addDelayMs: 99999 } }
   };
   const v = validate(hostile, config);
-  const filters = v.outputs.main_l.filters;
+  const filters = v.outputs.mains.filters;
   assert.ok(filters.length <= g.maxFiltersPerOutput, 'filter count capped');
   for (const f of filters) {
     assert.ok(f.gainDb <= g.maxBoostDb && f.gainDb >= -g.maxCutDb, `gain ${f.gainDb} escapes clamp`);
     assert.ok(f.q <= g.maxQ, `q ${f.q} escapes clamp`);
     assert.ok(f.reason.length <= 80, 'reason truncated');
   }
-  assert.ok(v.outputs.main_l.note.length <= 200, 'note truncated');
-  assert.equal(v.delays.main_l.addDelayMs, 200, 'delay hard-capped at 200 ms');
+  assert.ok(v.outputs.mains.note.length <= 200, 'note truncated');
+  assert.equal(v.delays.mains.addDelayMs, 200, 'delay hard-capped at 200 ms');
 });
 
 test('validate drops malformed filters instead of crashing', () => {
   const malformed = {
     outputs: {
-      main_l: {
+      mains: {
         filters: [
           { type: 'peq', freq: 'DROP TABLE', gainDb: 3 },     // non-numeric freq
           { type: 'peq', freq: 200, gainDb: NaN },            // NaN gain
@@ -52,7 +52,7 @@ test('validate drops malformed filters instead of crashing', () => {
     }
   };
   const v = validate(malformed, config);
-  const filters = v.outputs.main_l.filters;
+  const filters = v.outputs.mains.filters;
   assert.equal(filters.length, 1, 'only the coercible filter survives');
   assert.equal(filters[0].type, 'peq', 'unknown filter type coerced to peq');
 });
@@ -79,12 +79,12 @@ test('validate enforces per-output band and the no-boost-below floor', () => {
 test('validate ignores advisor-invented outputs and negative/garbage delays', () => {
   const advice = {
     outputs: { not_a_real_output: { filters: [{ type: 'peq', freq: 100, gainDb: -3, q: 2 }] } },
-    delays: { main_l: { addDelayMs: -50 }, fill_c: { addDelayMs: 'lots' }, _note: 'x' }
+    delays: { mains: { addDelayMs: -50 }, side_fills: { addDelayMs: 'lots' }, _note: 'x' }
   };
   const v = validate(advice, config);
   assert.equal(v.outputs.not_a_real_output, undefined, 'unknown output ignored');
-  assert.equal(v.delays.main_l.addDelayMs, 0, 'negative delay floored at 0');
-  assert.equal(v.delays.fill_c.addDelayMs, 0, 'non-numeric delay coerced to 0');
+  assert.equal(v.delays.mains.addDelayMs, 0, 'negative delay floored at 0');
+  assert.equal(v.delays.side_fills.addDelayMs, 0, 'non-numeric delay coerced to 0');
 });
 
 test('validate tolerates a completely empty advisor response', () => {
@@ -98,14 +98,14 @@ test('validate tolerates a completely empty advisor response', () => {
 function fakeResults() {
   const freqs = Array.from({ length: 64 }, (_, i) => 20 * Math.pow(1000, i / 63));
   const rows = [];
-  for (const output of config.outputs.filter((o) => o.enabled !== false)) {
+  for (const bus of config.buses) {
     rows.push({
-      outputId: output.id, positionId: 'p1', positionWeight: 1, zone: 'main',
+      outputId: bus.id, positionId: 'p1', positionWeight: 1, zone: 'main',
       delayMs: 20, confidence: 12, polarity: 1, levelDbfs: -20,
       freqs, magDb: freqs.map(() => 0)
     });
     rows.push({
-      outputId: output.id, positionId: 'p7', positionWeight: 0, zone: 'balcony',
+      outputId: bus.id, positionId: 'p7', positionWeight: 0, zone: 'balcony',
       delayMs: 60, confidence: 12, polarity: 1, levelDbfs: -30,
       freqs, magDb: freqs.map(() => 50) // wildly different — must not skew the average
     });

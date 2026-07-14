@@ -88,7 +88,7 @@ test('rejects an unknown mode', () => {
 
 test('rejects a band with lo >= hi', () => {
   const cfg = goodConfig();
-  cfg.outputs[0].band = [16000, 40];
+  cfg.buses[0].band = [16000, 40];
   assert.ok(validateConfig(cfg).some((e) => /band/.test(e)));
 });
 
@@ -120,19 +120,29 @@ test('rejects minQ >= maxQ even when both are individually in range', () => {
   assert.ok(validateConfig(cfg).some((e) => /minQ must be less than maxQ/.test(e)));
 });
 
-test('rejects duplicate output ids and bad routing', () => {
+test('rejects duplicate bus ids and bad routing', () => {
   const cfg = goodConfig();
-  cfg.outputs[1].id = cfg.outputs[0].id;
+  cfg.buses[1].id = cfg.buses[0].id;
   assert.ok(validateConfig(cfg).some((e) => /duplicate id/.test(e)));
 
   const cfg2 = goodConfig();
-  cfg2.outputs[0].wing.type = 'bus';
+  cfg2.buses[0].wing.type = 'bus';
   assert.ok(validateConfig(cfg2).some((e) => /wing\.type/.test(e)));
+});
+
+test('rejects duplicate physical output ids and an unknown sourceBusId', () => {
+  const cfg = goodConfig();
+  cfg.physicalOutputs[1].id = cfg.physicalOutputs[0].id;
+  assert.ok(validateConfig(cfg).some((e) => /duplicate id/.test(e)));
+
+  const cfg2 = goodConfig();
+  cfg2.physicalOutputs[0].sourceBusId = 'not_a_real_bus';
+  assert.ok(validateConfig(cfg2).some((e) => /sourceBusId/.test(e)));
 });
 
 test('rejects a positive sweep trim (trims attenuate, never boost)', () => {
   const cfg = goodConfig();
-  cfg.outputs[0].sweepTrimDb = 3;
+  cfg.buses[0].sweepTrimDb = 3;
   assert.ok(validateConfig(cfg).some((e) => /sweepTrimDb/.test(e)));
 });
 
@@ -146,7 +156,7 @@ test('reports multiple errors at once with path-specific messages', () => {
   const cfg = goodConfig();
   cfg.wing.port = 0;
   cfg.audio.sweep.levelDbfs = 0;
-  cfg.outputs[0].band = [500, 100];
+  cfg.buses[0].band = [500, 100];
   const errors = validateConfig(cfg);
   assert.ok(errors.length >= 3, `expected at least 3 errors, got: ${errors.join(' | ')}`);
 });

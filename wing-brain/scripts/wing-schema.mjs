@@ -126,6 +126,23 @@ export function ioInputFields(grp, inNum) {
   return { gain: `${p}/g`, phantomInvert: `${p}/vph` };
 }
 
+/**
+ * Physical output patch source -- which bus/channel feeds this physical
+ * output socket. TODO(church): ENTIRELY UNCONFIRMED. Nobody has queried the
+ * Wing's I/O patch matrix for physical outputs -- everything fixed on the
+ * 2026-07-10 visit covered mixing parameters (fader/mute/EQ/sends), not
+ * output patch routing. This is a best-effort guess mirroring the confirmed
+ * channel-input pattern (/ch/N/in/conn/grp + /in/conn/in) -- likely wrong in
+ * some way (group letter scheme, field names, or the whole shape). Verify
+ * against the real console before trusting it for anything beyond mock
+ * testing; every caller of this must gate on a `confirmed: true` flag first
+ * (see src/wing/patch-manager.js).
+ */
+export function physicalOutputPatchFields(grp, outNum) {
+  const p = `/io/out/${grp}/${outNum}`;
+  return { sourceGrp: `${p}/conn/grp`, sourceIn: `${p}/conn/in` };
+}
+
 /* ---------------------- shared field-group helpers ---------------------- */
 
 /** Channel-only: high-pass filter. TODO(church): confirmed as "flt", not "preamp/hpf". */

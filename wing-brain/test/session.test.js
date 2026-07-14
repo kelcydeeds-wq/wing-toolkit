@@ -18,6 +18,15 @@ const TMP_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'wing-brain-test-'));
 after(() => fs.rmSync(TMP_DATA_DIR, { recursive: true, force: true }));
 function newSession(opts) { return new TuneSession({ ...opts, dataDir: TMP_DATA_DIR }); }
 
+// "sub" is a 1:1 bus->physicalOutput pair in the shipped config (unlike
+// "mains", which has two physical outputs) — the simplest fixture for tests
+// that just want exactly one measurement per position.
+function oneOutputConfig() {
+  const bus = config.buses.find((b) => b.id === 'sub');
+  const physicalOutput = config.physicalOutputs.find((o) => o.id === 'sub_out');
+  return { ...config, buses: [bus], physicalOutputs: [physicalOutput] };
+}
+
 const sr = config.audio.sampleRate;
 const { sweep, inverse } = makeESS({ ...config.audio.sweep, sampleRate: sr });
 const captureSeconds = config.audio.sweep.seconds + config.audio.sweep.padSeconds;
@@ -57,8 +66,7 @@ test('auto-retries once on low confidence, uses the better attempt, and does not
   let call = 0;
   const audio = { playAndCapture: async () => (call++ === 0 ? noiseCapture() : cleanCapture(20)) };
   const { log, emit } = collectEvents();
-  const oneOutputCfg = { ...config, outputs: [config.outputs[0]] };
-  const session = newSession({ config: oneOutputCfg, room, audio, wing: fakeWing(), emit });
+  const session = newSession({ config: oneOutputConfig(), room, audio, wing: fakeWing(), emit });
 
   session.start('verify');
   await session.ready();
@@ -75,8 +83,7 @@ test('auto-retries once on low confidence, uses the better attempt, and does not
 test('warns (not silently drops) when confidence is still low after the retry', async () => {
   const audio = { playAndCapture: async () => noiseCapture() }; // always noisy
   const { log, emit } = collectEvents();
-  const oneOutputCfg = { ...config, outputs: [config.outputs[0]] };
-  const session = newSession({ config: oneOutputCfg, room, audio, wing: fakeWing(), emit });
+  const session = newSession({ config: oneOutputConfig(), room, audio, wing: fakeWing(), emit });
 
   session.start('verify');
   await session.ready();
@@ -89,8 +96,7 @@ test('does not retry when the first sweep is already confident', async () => {
   let call = 0;
   const audio = { playAndCapture: async () => { call++; return cleanCapture(20); } };
   const { log, emit } = collectEvents();
-  const oneOutputCfg = { ...config, outputs: [config.outputs[0]] };
-  const session = newSession({ config: oneOutputCfg, room, audio, wing: fakeWing(), emit });
+  const session = newSession({ config: oneOutputConfig(), room, audio, wing: fakeWing(), emit });
 
   session.start('verify');
   await session.ready();
@@ -108,8 +114,7 @@ test('flags a clipped capture and includes clipped:true in the stored result', a
     }
   };
   const { log, emit } = collectEvents();
-  const oneOutputCfg = { ...config, outputs: [config.outputs[0]] };
-  const session = newSession({ config: oneOutputCfg, room, audio, wing: fakeWing(), emit });
+  const session = newSession({ config: oneOutputConfig(), room, audio, wing: fakeWing(), emit });
 
   session.start('verify');
   await session.ready();
@@ -121,8 +126,7 @@ test('flags a clipped capture and includes clipped:true in the stored result', a
 test('stores a per-sweep SNR estimate and does not warn on a clean capture', async () => {
   const audio = { playAndCapture: async () => cleanCapture(20) };
   const { log, emit } = collectEvents();
-  const oneOutputCfg = { ...config, outputs: [config.outputs[0]] };
-  const session = newSession({ config: oneOutputCfg, room, audio, wing: fakeWing(), emit });
+  const session = newSession({ config: oneOutputConfig(), room, audio, wing: fakeWing(), emit });
 
   session.start('verify');
   await session.ready();
@@ -148,8 +152,7 @@ test('warns on low SNR (quiet capture near the noise floor)', async () => {
     }
   };
   const { log, emit } = collectEvents();
-  const oneOutputCfg = { ...config, outputs: [config.outputs[0]] };
-  const session = newSession({ config: oneOutputCfg, room, audio, wing: fakeWing(), emit });
+  const session = newSession({ config: oneOutputConfig(), room, audio, wing: fakeWing(), emit });
 
   session.start('verify');
   await session.ready();
@@ -168,14 +171,14 @@ test('runSweep applies a negative output trim so playback level drops, without s
       return cleanCapture(20);
     }
   };
-  const oneOutputCfg = { ...config, outputs: [config.outputs[0]] };
-  const session = newSession({ config: oneOutputCfg, room, audio, wing: fakeWing(), emit: () => {} });
+  const bus = oneOutputConfig().buses[0];
+  const session = newSession({ config: oneOutputConfig(), room, audio, wing: fakeWing(), emit: () => {} });
 
-  await session.runSweep({ ...config.outputs[0], sweepTrimDb: -6 });
+  await session.runSweep({ ...bus, sweepTrimDb: -6 });
   const trimmedPeak = lastSweepPeak;
-  await session.runSweep({ ...config.outputs[0] }); // no trim
-  const fullPeak = lastSweepPeak;
+  await session.runSweep({ ...bus, sweepTrimDb: undefined }); // no trim
 
+  const fullPeak = lastSweepPeak;
   assert.ok(Math.abs((fullPeak - trimmedPeak) - 6) < 0.1,
     `expected the -6 dB trim to lower playback peak by ~6 dB, saw ${fullPeak} vs ${trimmedPeak}`);
 });
@@ -193,7 +196,7 @@ function echoCapture(blip, captureSeconds, gain = 0.5) {
   return mic;
 }
 
-test('preflightCheck reports pass for every enabled output when signal returns', async () => {
+test('preflightCheck reports pass for every enabled physical output when signal returns', async () => {
   const audio = {
     setScenario: () => {},
     playAndCapture: async (blip, captureSeconds) => {
@@ -207,47 +210,52 @@ test('preflightCheck reports pass for every enabled output when signal returns',
 
   await session.preflightCheck();
 
-  const enabledCount = config.outputs.filter((o) => o.enabled !== false).length;
+  const enabledCount = config.physicalOutputs.filter((o) => o.enabled !== false).length;
   assert.equal(session.preflightResults.length, enabledCount);
   assert.ok(session.preflightResults.every((r) => r.pass), 'every output with a live return should pass');
   assert.equal(session.state, 'idle', 'preflight should leave the session idle when finished');
   assert.ok(log.some((e) => e.event === 'info' && /Pre-flight OK/.test(e.payload.message)));
 });
 
-test('preflightCheck flags a specific output with no return signal', async () => {
-  // Only the dead output returns nothing; give the live one an actual echo by
-  // keying off which output was soloed via a stateful wing mock.
-  let currentOutput = null;
+test('preflightCheck flags a specific physical output with no return signal', async () => {
+  // Only the "live" bus's physical output returns anything; give the live
+  // one an actual echo by keying off which BUS was soloed via a stateful
+  // wing mock (soloOutput receives a bus id, not a physical-output id).
+  let currentBus = null;
   const wing = {
-    soloOutput: async (id) => { currentOutput = id; },
+    soloOutput: async (id) => { currentBus = id; },
     unmuteAll: async () => {}
   };
   const audioStateful = {
     setScenario: () => {},
     playAndCapture: async (blip, captureSeconds) => {
       const n = Math.floor(captureSeconds * sr);
-      const mic = currentOutput === 'main_l' ? echoCapture(blip, captureSeconds) : new Float64Array(n);
+      const mic = currentBus === 'sub' ? echoCapture(blip, captureSeconds) : new Float64Array(n);
       return { ref: blip, mic };
     }
   };
-  const twoOutputCfg = { ...config, outputs: [config.outputs[0], { ...config.outputs[2], id: 'dead_sub' }] };
+  const liveBus = config.buses.find((b) => b.id === 'sub');
+  const liveOut = { ...config.physicalOutputs.find((o) => o.id === 'sub_out') };
+  const deadBus = { ...config.buses.find((b) => b.id === 'center_fill'), id: 'dead_bus' };
+  const deadOut = { ...config.physicalOutputs.find((o) => o.id === 'center_fill_out'), id: 'dead_out', sourceBusId: 'dead_bus' };
+  const twoOutputCfg = { ...config, buses: [liveBus, deadBus], physicalOutputs: [liveOut, deadOut] };
   const { log, emit } = collectEvents();
   const session = newSession({ config: twoOutputCfg, room, audio: audioStateful, wing, emit });
 
   await session.preflightCheck();
 
-  const live = session.preflightResults.find((r) => r.outputId === 'main_l');
-  const dead = session.preflightResults.find((r) => r.outputId === 'dead_sub');
+  const live = session.preflightResults.find((r) => r.outputId === 'sub_out');
+  const dead = session.preflightResults.find((r) => r.outputId === 'dead_out');
   assert.equal(live.pass, true);
   assert.equal(dead.pass, false);
   assert.ok(log.some((e) => e.event === 'warning' && /returned no usable signal/.test(e.payload.message)));
 });
 
-test('blipForOutput picks a test tone inside the output\'s configured band, not a fixed broadband frequency', () => {
+test('blipForOutput picks a test tone inside the bus\'s configured band, not a fixed broadband frequency', () => {
   const session = newSession({ config, room, audio: fakeWing(), wing: fakeWing(), emit: () => {} });
-  for (const output of config.outputs) {
-    const [lo, hi] = output.band;
-    const blip = session.blipForOutput(output);
+  for (const bus of config.buses) {
+    const [lo, hi] = bus.band;
+    const blip = session.blipForOutput(bus);
     // Recover the tone's dominant frequency via a zero-crossing count over
     // a clean stretch of the (windowed) blip, rather than re-deriving the
     // exact formula blipForOutput uses internally.
@@ -256,7 +264,7 @@ test('blipForOutput picks a test tone inside the output\'s configured band, not 
       if (blip[i - 1] <= 0 && blip[i] > 0) crossings++;
     }
     const freq = crossings / (blip.length / sr);
-    assert.ok(freq > lo && freq < hi, `${output.id}: test tone ${freq.toFixed(0)} Hz should sit inside band [${lo}, ${hi}]`);
+    assert.ok(freq > lo && freq < hi, `${bus.id}: test tone ${freq.toFixed(0)} Hz should sit inside band [${lo}, ${hi}]`);
   }
 });
 
@@ -268,9 +276,8 @@ test('preflightCheck fails a clipped capture even though its peak clears minPeak
       return { ref: blip, mic };
     }
   };
-  const oneOutputCfg = { ...config, outputs: [config.outputs[0]] };
   const { log, emit } = collectEvents();
-  const session = newSession({ config: oneOutputCfg, room, audio, wing: fakeWing(), emit });
+  const session = newSession({ config: oneOutputConfig(), room, audio, wing: fakeWing(), emit });
 
   await session.preflightCheck();
 
@@ -282,8 +289,7 @@ test('preflightCheck fails a clipped capture even though its peak clears minPeak
 
 test('preflightCheck refuses to run while a session is already in progress', async () => {
   const audio = { playAndCapture: async () => cleanCapture(20) };
-  const oneOutputCfg = { ...config, outputs: [config.outputs[0]] };
-  const session = newSession({ config: oneOutputCfg, room, audio, wing: fakeWing(), emit: () => {} });
+  const session = newSession({ config: oneOutputConfig(), room, audio, wing: fakeWing(), emit: () => {} });
   session.start('verify'); // state -> waiting_position
   await assert.rejects(() => session.preflightCheck(), /cannot pre-flight while a session is running/);
 });

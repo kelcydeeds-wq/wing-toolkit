@@ -13,13 +13,16 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
 import { makeOscTransport } from '../src/wing/osc.js';
-import { MAIN_COUNT, MATRIX_COUNT, mainStrip, matrixStrip, readValue } from './wing-schema.mjs';
+import { MAIN_COUNT, MATRIX_COUNT, mainStrip, matrixStrip, readValue, physicalOutputPatchFields } from './wing-schema.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
 
+const DEFAULT_PROBE_GRPS = ['A', 'B', 'C', 'D'];
+const DEFAULT_PROBE_NUMS = [1, 2, 3, 4, 5, 6, 7, 8];
+
 export function parseArgs(argv) {
-  const args = { mock: false, timeoutMs: 800, matrixCount: MATRIX_COUNT };
+  const args = { mock: false, timeoutMs: 800, matrixCount: MATRIX_COUNT, probeIoOut: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--mock') args.mock = true;
@@ -27,6 +30,7 @@ export function parseArgs(argv) {
     else if (a === '--port') args.port = Number(argv[++i]);
     else if (a === '--timeout') args.timeoutMs = Number(argv[++i]);
     else if (a === '--matrix-count') args.matrixCount = Number(argv[++i]);
+    else if (a === '--probe-io-out') args.probeIoOut = true;
     else if (a === '--help' || a === '-h') { printHelp(); process.exit(0); }
     else { console.error(`Unknown argument: ${a}`); printHelp(); process.exit(1); }
   }
@@ -38,7 +42,7 @@ function printHelp() {
 
   Read-only. Queries name + mute for every main (1-${MAIN_COUNT}) and matrix
   (1-N) on the console and prints a table, so you can match config/default.json's
-  outputs[].wing.num TODOs against what the console actually calls them.
+  buses[].wing.num TODOs against what the console actually calls them.
 
   --host <ip>         Wing console IP (default: config/default.json's wing.host).
   --port <n>          Wing OSC port (default: config/default.json's wing.port).
@@ -46,7 +50,36 @@ function printHelp() {
   --timeout <ms>      Per-address query timeout (default 800).
   --matrix-count <n>  How many matrix numbers to probe (default ${MATRIX_COUNT} --
                        matrix count itself is TODO(church), unconfirmed).
+  --probe-io-out      ALSO best-effort probe /io/out/<grp>/<n>/conn/grp+in for
+                       grp A-D, n 1-8 -- physicalOutputPatchFields()'s address
+                       family is an UNCONFIRMED GUESS (see wing-schema.mjs). A
+                       reply here doesn't prove the guess right, but silence
+                       across all of them is a strong signal the shape is wrong
+                       and needs to come from the console's own OSC docs/menus
+                       instead of guessing further.
 `);
+}
+
+/** Best-effort, clearly-speculative probe of the physical-output patch
+ *  address family. Returns only the combos that answered SOMETHING --
+ *  silence elsewhere is just silence, not evidence of anything. */
+export async function probePhysicalOutputPatches(transport, {
+  grps = DEFAULT_PROBE_GRPS, nums = DEFAULT_PROBE_NUMS, timeoutMs = 800
+} = {}) {
+  const hits = [];
+  for (const grp of grps) {
+    for (const num of nums) {
+      const fields = physicalOutputPatchFields(grp, num);
+      const [srcGrp, srcIn] = await Promise.all([
+        transport.get(fields.sourceGrp, { timeoutMs }),
+        transport.get(fields.sourceIn, { timeoutMs })
+      ]);
+      if (srcGrp !== null || srcIn !== null) {
+        hits.push({ grp, num, sourceGrp: readValue(srcGrp), sourceIn: readValue(srcIn) });
+      }
+    }
+  }
+  return hits;
 }
 
 /** Query name+mute for one strip. Pure I/O, no formatting — kept separate so
@@ -88,9 +121,12 @@ export async function identifyOutputs(args) {
   ];
   const rows = [];
   for (const strip of strips) rows.push(await queryStrip(transport, strip, args.timeoutMs));
-  transport.close();
 
-  return { rows, table: formatTable(rows) };
+  let ioOutHits = null;
+  if (args.probeIoOut) ioOutHits = await probePhysicalOutputPatches(transport, { timeoutMs: args.timeoutMs });
+
+  transport.close();
+  return { rows, table: formatTable(rows), ioOutHits };
 }
 
 /** Mock seed for --mock / tests: a plausible main+fill layout. */
@@ -107,9 +143,18 @@ export function seedMockOutputs(transport) {
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
   identifyOutputs(parseArgs(process.argv.slice(2)))
-    .then(({ table }) => {
+    .then(({ table, ioOutHits }) => {
       console.log(table);
-      console.log('\nMatch these against config/default.json outputs[].wing.num, then update the TODOs.');
+      console.log('\nMatch these against config/default.json buses[].wing.num, then update the TODOs.');
+      if (ioOutHits) {
+        console.log('\n--- /io/out probe (UNCONFIRMED address family -- see wing-schema.mjs) ---');
+        if (!ioOutHits.length) {
+          console.log('No replies from any grp/num combo tried. The guessed address shape is likely wrong --');
+          console.log('check the console\'s own OSC documentation/menus for the real I/O patch addressing.');
+        } else {
+          for (const h of ioOutHits) console.log(`  grp ${h.grp} num ${h.num}: sourceGrp=${h.sourceGrp} sourceIn=${h.sourceIn}`);
+        }
+      }
     })
     .catch((err) => { console.error(err); process.exit(1); });
 }

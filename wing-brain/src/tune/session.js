@@ -1,13 +1,32 @@
 // session.js — the guided measurement session state machine.
 //
-// A session walks: for each position → for each output → sweep, extract IR,
-// compute delay + magnitude. When all positions are done: spatial average,
-// EQ + delay recommendations, wait for human Apply.
+// A session walks: for each position → for each physical output → sweep,
+// extract IR, compute delay + magnitude. When all positions are done:
+// spatial average, EQ + delay recommendations, wait for human Apply.
+//
+// ROUTING MODEL: measurement happens per PHYSICAL OUTPUT (config.
+// physicalOutputs) so each driver's own geometry/health can be checked, but
+// every result is tagged with its source BUS id (outputId = bus.id) — that's
+// the only thing recommendEQ/recommendDelays ever see, and the only thing
+// apply() ever writes to. A bus with multiple physical outputs (e.g. stereo
+// "mains" -> main_l_out + main_r_out) gets its correction from spatialAverage
+// pooling ALL of their result rows together — no special-casing needed,
+// spatialAverage doesn't care whether multiple rows sharing one outputId came
+// from different mic positions, different physical outputs, or both.
+//
+// Shared-driver physical outputs (config.physicalOutputs[].sharedDrivers,
+// e.g. one "Side Fills" output driving two boxes via a passive split) can't
+// be isolated electronically — only by the operator physically unplugging a
+// cable. runSharedDriverWizard()/wizardContinue()/wizardConfirm() implement
+// that guided flow; the two individual-driver sweeps it produces are kept
+// OUT of `results` (so they never pollute the bus correction) and instead
+// feed a driver-health comparison (polarity/level/response deviation).
 //
 // Modes:
-//   'verify'  — one position (config room.verifyPosition), all outputs,
-//               compares against stored baseline, writes nothing.
-//   'full'    — all positions, all outputs, produces recommendations.
+//   'verify'  — one position (config room.verifyPosition), all physical
+//               outputs (no wizard — fast check), compares against baseline.
+//   'full'    — all positions, all physical outputs, wizard for shared
+//               drivers, produces recommendations.
 
 import { makeESS, makeBlip, scaleBuffer, extractIR, findDelay, magnitudeResponse,
          polarity, rmsDbfs, isClipped, estimateSnrDb, peakDbfs }
@@ -67,8 +86,11 @@ export class TuneSession {
     this.mode = null;
     this.positions = [];
     this.posIndex = 0;
-    this.results = [];   // { positionId, outputId, delayMs, confidence, polarity, freqs, magDb, levelDbfs }
-    this.state = 'idle'; // idle | waiting_position | measuring | preflight | review | done
+    this.results = [];             // bus-layer rows only -- feed recommendations
+    this.driverHealthResults = []; // shared-driver individual sweeps -- health-check only, never corrected
+    this.driverHealthReports = []; // { physicalOutputId, positionId, driverA, driverB, ..., flags[] }
+    this.state = 'idle';           // idle | waiting_position | measuring | wizard | preflight | review | done
+    this.wizard = null;            // active shared-driver wizard step, or null
     this.recommendations = null;
     this.preflightResults = [];
 
@@ -85,24 +107,41 @@ export class TuneSession {
   }
 
   /**
-   * Build a pre-flight test tone centered inside an output's configured
-   * band, not a fixed broadband frequency — a sub (e.g. band [25, 120]) will
-   * never pass a generic 1 kHz blip, that's the crossover doing its job, not
-   * a routing failure. Frequency is the band's geometric mean, nudged in
-   * from the edges so a steep filter right at the crossover point doesn't
-   * attenuate the tone.
+   * Build a test tone centered inside a bus's configured band, not a fixed
+   * broadband frequency — a sub (e.g. band [25, 120]) will never pass a
+   * generic 1 kHz blip, that's the crossover doing its job, not a routing
+   * failure. Frequency is the band's geometric mean, nudged in from the
+   * edges so a steep filter right at the crossover point doesn't attenuate
+   * the tone. `seconds` override is used by the wizard's shorter confidence blip.
    */
-  blipForOutput(output) {
-    const [lo, hi] = output.band || [20, 20000];
+  blipForOutput(bus, { seconds } = {}) {
+    const [lo, hi] = bus.band || [20, 20000];
     const mid = Math.sqrt(lo * hi);
     const freq = Math.min(Math.max(mid, lo * 1.2), hi * 0.8);
     return makeBlip({
-      freq, seconds: this.blipSeconds,
+      freq, seconds: seconds ?? this.blipSeconds,
       sampleRate: this.cfg.audio.sampleRate, levelDbfs: this.blipLevelDbfs
     });
   }
 
+  activePhysicalOutputs() {
+    return this.cfg.physicalOutputs.filter((o) => o.enabled !== false);
+  }
+
+  /** Every bus fed by at least one active physical output — what
+   *  soloOutput()/unmuteAll() operate on. */
+  activeBuses() {
+    const busIds = new Set(this.activePhysicalOutputs().map((o) => o.sourceBusId));
+    return this.cfg.buses.filter((b) => busIds.has(b.id));
+  }
+
+  busFor(physicalOutput) {
+    return this.cfg.buses.find((b) => b.id === physicalOutput.sourceBusId);
+  }
+
   snapshot() {
+    const w = this.wizard;
+    const wizardDrivers = w?.physicalOutput.sharedDrivers?.drivers || [];
     return {
       state: this.state,
       mode: this.mode,
@@ -113,7 +152,17 @@ export class TuneSession {
       results: this.results.map(({ freqs, magDb, ...meta }) => meta), // meters only, traces sent separately
       recommendations: this.recommendations,
       preflightResults: this.preflightResults,
-      currentRecordId: this.currentRecordId ?? null
+      currentRecordId: this.currentRecordId ?? null,
+      wizard: w ? {
+        physicalOutputId: w.physicalOutputId,
+        label: w.physicalOutput.label,
+        step: w.step,                                  // 'instruct' | 'confirm'
+        isCombinedStep: w.driverIndex >= wizardDrivers.length,
+        currentDriverLabel: w.driverIndex < wizardDrivers.length ? wizardDrivers[w.driverIndex].label : 'both',
+        allDriverLabels: wizardDrivers.map((d) => d.label),
+        driverIndex: w.driverIndex
+      } : null,
+      pendingPatches: this.wing.hasPendingPatches ? this.wing.hasPendingPatches() : false
     };
   }
 
@@ -123,6 +172,9 @@ export class TuneSession {
     }
     this.mode = mode;
     this.results = [];
+    this.driverHealthResults = [];
+    this.driverHealthReports = [];
+    this.wizard = null;
     this.recommendations = null;
     this.currentRecordId = null;
     this.startedAt = new Date().toISOString();
@@ -142,62 +194,20 @@ export class TuneSession {
     this.emit('session', this.snapshot());
 
     try {
-      for (const output of this.cfg.outputs.filter((o) => o.enabled !== false)) {
-        this.emit('measuring', { position: pos.label, output: output.label });
-        if (this.audio.setScenario) this.audio.setScenario(output.id, pos, output.sources); // mock hook
-        await this.wing.soloOutput(output.id, this.cfg.outputs);
-        await pause(400); // let mutes settle
-
-        let sweep = await this.runSweep(output);
-        if (sweep.delay.confidence < LOW_CONFIDENCE_THRESHOLD) {
-          this.emit('info', { message: `Low confidence on ${output.label} at ${pos.label} — retrying sweep once…` });
-          const retry = await this.runSweep(output);
-          if (retry.delay.confidence > sweep.delay.confidence) sweep = retry;
+      for (const physicalOutput of this.activePhysicalOutputs()) {
+        const bus = this.busFor(physicalOutput);
+        if (!bus) {
+          this.emit('warning', { message: `${physicalOutput.label}: sourceBusId "${physicalOutput.sourceBusId}" not found in config.buses — skipped` });
+          continue;
         }
-        const { ref, mic, delay, ir, freqs, magDb } = sweep;
-
-        const predicted = this.predictArrivalMs(output.id, pos);
-        if (predicted !== null && Math.abs(delay.ms - predicted) > 8) {
-          this.emit('warning', {
-            message: `Geometry mismatch at ${pos.label} / ${output.label}: measured ${delay.ms.toFixed(1)} ms vs predicted ${predicted.toFixed(1)} ms. Wrong position, wrong output soloed, or routing issue?`,
-            position: pos.id, output: output.id
-          });
+        if (physicalOutput.sharedDrivers?.count > 1) {
+          await this.runSharedDriverWizard(physicalOutput, bus, pos);
+        } else {
+          await this.measureOnePhysicalOutput(physicalOutput, bus, pos);
         }
-        if (delay.confidence < LOW_CONFIDENCE_THRESHOLD) {
-          this.emit('warning', {
-            message: `Low confidence on ${output.label} at ${pos.label} even after retry — check mic/routing, retake recommended.`,
-            position: pos.id, output: output.id
-          });
-        }
-        const clipped = isClipped(mic);
-        if (clipped) {
-          this.emit('warning', {
-            message: `Clipped capture on ${output.label} at ${pos.label} — mic input near 0 dBFS. Lower the sweep level or mic preamp gain and retake.`,
-            position: pos.id, output: output.id
-          });
-        }
-        const snrDb = estimateSnrDb(mic, this.cfg.audio.sampleRate);
-        if (snrDb < LOW_SNR_THRESHOLD_DB) {
-          this.emit('warning', {
-            message: `Low signal-to-noise on ${output.label} at ${pos.label} (~${snrDb} dB) — check mic gain, routing, or ambient noise.`,
-            position: pos.id, output: output.id
-          });
-        }
-
-        const result = {
-          positionId: pos.id, positionWeight: pos.weight ?? 1,
-          zone: pos.zone || 'main',
-          outputId: output.id,
-          delayMs: delay.ms, confidence: Math.round(delay.confidence),
-          polarity: polarity(ir),
-          levelDbfs: Math.round(rmsDbfs(mic) * 10) / 10,
-          snrDb, clipped,
-          freqs: Array.from(freqs), magDb: Array.from(magDb)
-        };
-        this.results.push(result);
-        this.emit('trace', result);
+        this.state = 'measuring';
       }
-      await this.wing.unmuteAll(this.cfg.outputs);
+      await this.wing.unmuteAll(this.activeBuses());
 
       this.posIndex++;
       if (this.posIndex >= this.positions.length) {
@@ -208,19 +218,21 @@ export class TuneSession {
       }
     } catch (err) {
       this.state = 'waiting_position'; // allow retake of this position
+      this.wizard = null;
       this.emit('error', { message: String(err.message || err) });
       this.emit('session', this.snapshot());
     }
   }
 
   /**
-   * Play/capture one sweep and run the delay + IR + magnitude pipeline.
-   * Applies the output's sweepTrimDb (e.g. subs run quieter than mains) —
+   * Play/capture one sweep and run the delay + IR + magnitude pipeline for a
+   * BUS (the sweep always plays through whichever bus is currently soloed).
+   * Applies the bus's sweepTrimDb (e.g. subs run quieter than mains) —
    * extractIR peak-normalizes the recovered IR, so the trim does not skew
    * the magnitude/delay results, only the captured levelDbfs and headroom.
    */
-  async runSweep(output) {
-    const sweep = scaleBuffer(this.sweep, output?.sweepTrimDb);
+  async runSweep(bus) {
+    const sweep = scaleBuffer(this.sweep, bus?.sweepTrimDb);
     const { ref, mic } = await this.audio.playAndCapture(sweep, this.captureSeconds);
     const delay = findDelay(ref, mic, this.cfg.audio.sampleRate);
     const ir = extractIR(mic, this.inverse, this.cfg.audio.sampleRate);
@@ -229,9 +241,228 @@ export class TuneSession {
   }
 
   /**
-   * Pre-flight: play a short blip on each enabled output and confirm signal
-   * returns before committing to a full guided session. Does not touch
-   * this.results — purely a go/no-go check, reported per output on the UI.
+   * Measure ONE physical output at ONE position: solo its bus, attempt
+   * per-driver test-signal injection (falls back to bus solo/mute alone if
+   * injection isn't confirmed/available yet — see PatchManager), sweep,
+   * always restore the patch if it was injected, then report + store the
+   * result. Used both by the normal per-output loop and by the wizard's
+   * individual/combined steps (via `opts`).
+   */
+  async measureOnePhysicalOutput(physicalOutput, bus, pos, opts = {}) {
+    const { driverVariant = null, speakerIdOverride = null, excludeFromCorrection = false } = opts;
+    const label = driverVariant ? `${physicalOutput.label} (${driverVariant})` : physicalOutput.label;
+    const speakerId = speakerIdOverride || physicalOutput.speakerId;
+
+    this.emit('measuring', { position: pos.label, output: label });
+    if (this.audio.setScenario) this.audio.setScenario(speakerId || bus.id, pos, [speakerId || bus.id]);
+    await this.wing.soloOutput(bus.id, this.activeBuses());
+
+    let injected = false;
+    try {
+      await this.wing.injectTestSignal(physicalOutput);
+      injected = true;
+    } catch (err) {
+      this.emit('info', { message: `${physicalOutput.label}: test-signal injection unavailable (${err.message}) — measuring via normal bus routing.` });
+    }
+    await pause(400); // let mutes/patch settle
+
+    let sweep = await this.runSweep(bus);
+    if (sweep.delay.confidence < LOW_CONFIDENCE_THRESHOLD) {
+      this.emit('info', { message: `Low confidence on ${label} at ${pos.label} — retrying sweep once…` });
+      const retry = await this.runSweep(bus);
+      if (retry.delay.confidence > sweep.delay.confidence) sweep = retry;
+    }
+    const { mic, delay, ir, freqs, magDb } = sweep;
+
+    if (injected) {
+      try {
+        await this.wing.restorePatch(physicalOutput);
+      } catch (err) {
+        this.emit('error', {
+          message: `${physicalOutput.label}: FAILED to restore its original patch — use "Restore All Patches" in Settings immediately. (${err.message})`
+        });
+      }
+    }
+
+    const predicted = speakerId ? this.predictArrivalMs(speakerId, pos) : null;
+    if (predicted !== null && Math.abs(delay.ms - predicted) > 8) {
+      this.emit('warning', {
+        message: `Geometry mismatch at ${pos.label} / ${label}: measured ${delay.ms.toFixed(1)} ms vs predicted ${predicted.toFixed(1)} ms. Wrong position, wrong output soloed, or routing issue?`,
+        position: pos.id, output: physicalOutput.id
+      });
+    }
+    if (delay.confidence < LOW_CONFIDENCE_THRESHOLD) {
+      this.emit('warning', {
+        message: `Low confidence on ${label} at ${pos.label} even after retry — check mic/routing, retake recommended.`,
+        position: pos.id, output: physicalOutput.id
+      });
+    }
+    const clipped = isClipped(mic);
+    if (clipped) {
+      this.emit('warning', {
+        message: `Clipped capture on ${label} at ${pos.label} — mic input near 0 dBFS. Lower the sweep level or mic preamp gain and retake.`,
+        position: pos.id, output: physicalOutput.id
+      });
+    }
+    const snrDb = estimateSnrDb(mic, this.cfg.audio.sampleRate);
+    if (snrDb < LOW_SNR_THRESHOLD_DB) {
+      this.emit('warning', {
+        message: `Low signal-to-noise on ${label} at ${pos.label} (~${snrDb} dB) — check mic gain, routing, or ambient noise.`,
+        position: pos.id, output: physicalOutput.id
+      });
+    }
+
+    const result = {
+      positionId: pos.id, positionWeight: pos.weight ?? 1, zone: pos.zone || 'main',
+      outputId: bus.id,                 // BUS layer id -- the only thing recommendations/apply() ever key on
+      physicalOutputId: physicalOutput.id,
+      driverVariant,                    // null (normal) | driver label | 'combined'
+      delayMs: delay.ms, confidence: Math.round(delay.confidence),
+      polarity: polarity(ir),
+      levelDbfs: Math.round(rmsDbfs(mic) * 10) / 10,
+      snrDb, clipped,
+      freqs: Array.from(freqs), magDb: Array.from(magDb)
+    };
+
+    if (excludeFromCorrection) this.driverHealthResults.push(result);
+    else this.results.push(result);
+    this.emit('trace', result);
+    return result;
+  }
+
+  /**
+   * Guided wizard for a shared-driver physical output (e.g. one "Side
+   * Fills" output driving two boxes via a passive split) — the console
+   * can't isolate them electronically, only the operator physically
+   * unplugging a cable can. Suspends the caller (the position loop in
+   * ready()) until the whole instruct/confirm/sweep sequence completes for
+   * every individual driver PLUS one combined sweep; wizardContinue()/
+   * wizardConfirm() (driven by separate websocket actions from the UI) do
+   * the actual stepping and resolve the returned promise when done.
+   */
+  runSharedDriverWizard(physicalOutput, bus, pos) {
+    return new Promise((resolve, reject) => {
+      this.wizard = {
+        physicalOutputId: physicalOutput.id, physicalOutput, bus, pos,
+        driverIndex: 0, step: 'instruct', driverResults: [],
+        _resolve: resolve, _reject: reject
+      };
+      this.state = 'wizard';
+      this.emit('session', this.snapshot());
+    });
+  }
+
+  /** UI tapped Continue on an instruction screen — plays the confidence
+   *  blip (operator listens with their own ears; no capture/analysis) and
+   *  advances to the confirm step. */
+  async wizardContinue() {
+    if (this.state !== 'wizard' || !this.wizard || this.wizard.step !== 'instruct') return;
+    const w = this.wizard;
+    const drivers = w.physicalOutput.sharedDrivers.drivers;
+    const isCombinedStep = w.driverIndex >= drivers.length;
+    const label = isCombinedStep ? 'both drivers' : drivers[w.driverIndex].label;
+    this.emit('info', { message: `Playing confidence tone for ${label}…` });
+    const blip = this.blipForOutput(w.bus, { seconds: 1.5 });
+    await this.audio.playAndCapture(blip, 1.9); // playback only -- operator confirms by ear
+    w.step = 'confirm';
+    this.emit('session', this.snapshot());
+  }
+
+  /** UI answered the "did you hear ONLY <driver>?" question. `heard=false`
+   *  replays the instructions (per spec: "No = replay instructions") rather
+   *  than failing the wizard — cabling mistakes are common and cheap to fix. */
+  async wizardConfirm(heard) {
+    if (this.state !== 'wizard' || !this.wizard || this.wizard.step !== 'confirm') return;
+    const w = this.wizard;
+
+    if (!heard) {
+      w.step = 'instruct';
+      this.emit('info', { message: 'Recheck the connection, then press Continue to replay the tone.' });
+      this.emit('session', this.snapshot());
+      return;
+    }
+
+    const drivers = w.physicalOutput.sharedDrivers.drivers;
+    const isCombinedStep = w.driverIndex >= drivers.length;
+
+    try {
+      if (isCombinedStep) {
+        const result = await this.measureOnePhysicalOutput(w.physicalOutput, w.bus, w.pos, { driverVariant: 'combined' });
+        this.checkDriverHealth(w.physicalOutput, w.pos, w.driverResults, result);
+        const resolve = w._resolve;
+        this.wizard = null;
+        this.state = 'measuring';
+        this.emit('session', this.snapshot());
+        resolve();
+      } else {
+        const driver = drivers[w.driverIndex];
+        const result = await this.measureOnePhysicalOutput(w.physicalOutput, w.bus, w.pos, {
+          driverVariant: driver.label, speakerIdOverride: driver.speakerId, excludeFromCorrection: true
+        });
+        w.driverResults.push(result);
+        w.driverIndex++;
+        w.step = 'instruct';
+        this.state = 'wizard';
+        this.emit('session', this.snapshot());
+      }
+    } catch (err) {
+      this.emit('error', { message: String(err.message || err) });
+      w.step = 'instruct';
+      this.state = 'wizard';
+      this.emit('session', this.snapshot());
+    }
+  }
+
+  /**
+   * Compare the two individual-driver sweeps from a completed wizard run:
+   * polarity mismatch, level mismatch, and the single largest per-band
+   * response deviation. Flags anything beyond a few dB — this is
+   * truth-telling about driver health, never fed into the bus correction
+   * (buildRecommendations only ever reads `results`, not `driverHealthResults`).
+   */
+  checkDriverHealth(physicalOutput, pos, individualResults, combinedResult) {
+    if (individualResults.length < 2) return;
+    const [a, b] = individualResults;
+    const flags = [];
+    if (a.polarity !== b.polarity) {
+      flags.push(`polarity mismatch (${a.driverVariant}: ${a.polarity > 0 ? '+' : '−'}, ${b.driverVariant}: ${b.polarity > 0 ? '+' : '−'})`);
+    }
+    const levelDiffDb = Math.abs(a.levelDbfs - b.levelDbfs);
+    if (levelDiffDb > 3) flags.push(`level differs by ${levelDiffDb.toFixed(1)} dB between ${a.driverVariant} and ${b.driverVariant}`);
+
+    let maxResponseDevDb = 0, maxResponseDevHz = 0;
+    const len = Math.min(a.freqs.length, b.freqs.length);
+    for (let i = 0; i < len; i++) {
+      const dev = Math.abs(a.magDb[i] - b.magDb[i]);
+      if (dev > maxResponseDevDb) { maxResponseDevDb = dev; maxResponseDevHz = a.freqs[i]; }
+    }
+    if (maxResponseDevDb > 3) {
+      flags.push(`response differs by ${maxResponseDevDb.toFixed(1)} dB near ${Math.round(maxResponseDevHz)} Hz between ${a.driverVariant} and ${b.driverVariant}`);
+    }
+
+    const report = {
+      physicalOutputId: physicalOutput.id, positionId: pos.id,
+      driverA: a.driverVariant, driverB: b.driverVariant,
+      levelDiffDb: Math.round(levelDiffDb * 10) / 10,
+      maxResponseDevDb: Math.round(maxResponseDevDb * 10) / 10,
+      maxResponseDevHz: Math.round(maxResponseDevHz),
+      flags
+    };
+    this.driverHealthReports.push(report);
+    this.emit(flags.length ? 'warning' : 'info', {
+      message: flags.length
+        ? `${physicalOutput.label} driver health: ${flags.join('; ')}`
+        : `${physicalOutput.label} driver health OK — ${a.driverVariant}/${b.driverVariant} match within tolerance.`
+    });
+  }
+
+  /**
+   * Pre-flight: play a short blip on each enabled physical output and
+   * confirm signal returns before committing to a full guided session.
+   * Shared-driver outputs are NOT walked through the wizard here — this is
+   * a fast go/no-go check, not a health audit; it tests the combined signal
+   * automatically like any other output. Does not touch this.results —
+   * purely a go/no-go check, reported per output on the UI.
    */
   async preflightCheck() {
     if (!['idle', 'done', 'review'].includes(this.state)) {
@@ -248,24 +479,39 @@ export class TuneSession {
     this.emit('session', this.snapshot());
 
     try {
-      for (const output of this.cfg.outputs.filter((o) => o.enabled !== false)) {
-        this.emit('preflight_progress', { outputId: output.id, label: output.label, status: 'testing' });
-        if (this.audio.setScenario) this.audio.setScenario(output.id, probePos, output.sources);
-        await this.wing.soloOutput(output.id, this.cfg.outputs);
+      for (const physicalOutput of this.activePhysicalOutputs()) {
+        const bus = this.busFor(physicalOutput);
+        if (!bus) continue;
+        const speakerId = physicalOutput.speakerId;
+        this.emit('preflight_progress', { outputId: physicalOutput.id, label: physicalOutput.label, status: 'testing' });
+        if (this.audio.setScenario) this.audio.setScenario(speakerId || bus.id, probePos, [speakerId || bus.id]);
+        await this.wing.soloOutput(bus.id, this.activeBuses());
+
+        let injected = false;
+        try { await this.wing.injectTestSignal(physicalOutput); injected = true; }
+        catch { /* fall back to bus solo/mute only -- same behavior as before injection existed */ }
         await pause(300);
 
-        const blip = scaleBuffer(this.blipForOutput(output), output.sweepTrimDb);
+        const blip = scaleBuffer(this.blipForOutput(bus), bus.sweepTrimDb);
         const { mic } = await this.audio.playAndCapture(blip, this.blipCaptureSeconds);
+
+        if (injected) {
+          try { await this.wing.restorePatch(physicalOutput); }
+          catch (err) {
+            this.emit('error', { message: `${physicalOutput.label}: FAILED to restore its original patch — use "Restore All Patches" in Settings immediately. (${err.message})` });
+          }
+        }
+
         const peak = Math.round(peakDbfs(mic) * 10) / 10;
         const snrDb = estimateSnrDb(mic, this.cfg.audio.sampleRate);
         const clipped = isClipped(mic);
         const pass = peak >= minPeak && !clipped && snrDb >= minSnr;
 
-        const result = { outputId: output.id, label: output.label, pass, peakDbfs: peak, snrDb, clipped, status: pass ? 'pass' : 'fail' };
+        const result = { outputId: physicalOutput.id, label: physicalOutput.label, pass, peakDbfs: peak, snrDb, clipped, status: pass ? 'pass' : 'fail' };
         this.preflightResults.push(result);
         this.emit('preflight_progress', result);
       }
-      await this.wing.unmuteAll(this.cfg.outputs);
+      await this.wing.unmuteAll(this.activeBuses());
     } finally {
       this.state = 'idle';
       this.emit('session', this.snapshot());
@@ -292,9 +538,24 @@ export class TuneSession {
   retake() {
     if (this.posIndex > 0 && this.state === 'waiting_position') {
       this.posIndex--;
-      this.results = this.results.filter((r) => r.positionId !== this.positions[this.posIndex].id);
+      const retakenId = this.positions[this.posIndex].id;
+      this.results = this.results.filter((r) => r.positionId !== retakenId);
+      this.driverHealthResults = this.driverHealthResults.filter((r) => r.positionId !== retakenId);
+      this.driverHealthReports = this.driverHealthReports.filter((r) => r.positionId !== retakenId);
       this.emit('session', this.snapshot());
     }
+  }
+
+  /** "Restore All Patches" escape hatch — reads the on-disk snapshot and
+   *  reverts every pending repatch, regardless of session state. Safe to
+   *  call any time, including when nothing is pending (no-op). */
+  restoreAllPatches() {
+    const restored = this.wing.restoreAllPatches ? this.wing.restoreAllPatches() : [];
+    this.emit('info', {
+      message: restored.length ? `Restored ${restored.length} patch(es) to their original source.` : 'No pending patches to restore.'
+    });
+    this.emit('session', this.snapshot());
+    return restored;
   }
 
   async finish() {
@@ -342,24 +603,29 @@ export class TuneSession {
   }
 
 
-  /** Direct-path arrival prediction from room geometry (ms). Null if unknown. */
-  predictArrivalMs(outputId, pos) {
-    const output = this.cfg.outputs.find((o) => o.id === outputId);
-    const srcIds = output?.sources || [outputId];
-    const spks = (this.room.speakers || []).filter((x) => srcIds.includes(x.id));
-    if (!spks.length || pos.x === undefined) return null;
-    // Nearest source dominates the first arrival (matters for shared-channel fills)
-    const d = Math.min(...spks.map((s) =>
-      Math.hypot(s.x - pos.x, s.y - pos.y, (s.z ?? 0) - (pos.z ?? 1.2))));
+  /** Direct-path arrival prediction from room geometry (ms). Null if unknown
+   *  speakerId, or a shared-driver output outside the wizard (no single
+   *  speaker to predict against — skip the check rather than guess). */
+  predictArrivalMs(speakerId, pos) {
+    if (!speakerId) return null;
+    const spk = (this.room.speakers || []).find((x) => x.id === speakerId);
+    if (!spk || pos.x === undefined) return null;
+    const d = Math.hypot(spk.x - pos.x, spk.y - pos.y, (spk.z ?? 0) - (pos.z ?? 1.2));
     return (d / 343) * 1000;
   }
 
+  /**
+   * Corrections are built per BUS, pooling every result row tagged with
+   * that bus's id — regardless of whether those rows came from different mic
+   * positions, different physical outputs sharing the bus (stereo mains), or
+   * a wizard's combined sweep. spatialAverage() doesn't need to know which.
+   */
   buildRecommendations() {
     const g = this.cfg.guardrails;
     const perOutput = {};
 
-    for (const output of this.cfg.outputs) {
-      const rs = this.results.filter((r) => r.outputId === output.id);
+    for (const bus of this.cfg.buses) {
+      const rs = this.results.filter((r) => r.outputId === bus.id);
       if (!rs.length) continue;
 
       const grid = rs[0].freqs;
@@ -370,11 +636,11 @@ export class TuneSession {
       const target = targetOnGrid(activeTargetCurve(this.cfg).points, Float64Array.from(grid));
       const filters = recommendEQ({
         freqs: Float64Array.from(grid), avg, varDb, target, guardrails: g,
-        band: output.band
+        band: bus.band
       });
 
-      perOutput[output.id] = {
-        label: output.label,
+      perOutput[bus.id] = {
+        label: bus.label,
         filters,
         avg: Array.from(avg), varDb: Array.from(varDb),
         target: Array.from(target), freqs: grid,
@@ -390,10 +656,10 @@ export class TuneSession {
     }
 
     const delays = recommendDelays({
-      results: this.results, outputs: this.cfg.outputs, guardrails: this.cfg.guardrails
+      results: this.results, outputs: this.cfg.buses, guardrails: this.cfg.guardrails
     });
     const zoneReport = this.buildZoneReport();
-    return { perOutput, delays, zoneReport, applied: false };
+    return { perOutput, delays, zoneReport, driverHealth: this.driverHealthReports.length ? this.driverHealthReports : null, applied: false };
   }
 
 
@@ -425,16 +691,19 @@ export class TuneSession {
     return Object.keys(report).length ? report : null;
   }
 
+  /** Verify report keys on PHYSICAL outputs (not buses) — the point is
+   *  confirming every individual driver still works, which a bus-level
+   *  aggregate could mask (e.g. one blown fill speaker). */
   buildVerifyReport() {
     const baseline = fs.existsSync(this.baselinePath)
       ? JSON.parse(fs.readFileSync(this.baselinePath, 'utf8'))
       : null;
     const report = { outputs: [], baselineFound: !!baseline };
-    for (const output of this.cfg.outputs) {
-      const r = this.results.find((x) => x.outputId === output.id);
+    for (const physicalOutput of this.cfg.physicalOutputs) {
+      const r = this.results.find((x) => x.physicalOutputId === physicalOutput.id);
       if (!r) continue;
       const entry = {
-        label: output.label,
+        label: physicalOutput.label,
         delayMs: Math.round(r.delayMs * 10) / 10,
         levelDbfs: r.levelDbfs,
         polarity: r.polarity,
@@ -442,7 +711,7 @@ export class TuneSession {
         drift: null
       };
       if (baseline) {
-        const b = baseline.outputs?.find((x) => x.label === output.label);
+        const b = baseline.outputs?.find((x) => x.label === physicalOutput.label);
         if (b) {
           entry.drift = {
             delayMs: Math.round((r.delayMs - b.delayMs) * 10) / 10,
@@ -465,6 +734,8 @@ export class TuneSession {
       finishedAt: new Date().toISOString(),
       positions: this.positions.map(({ id, label, zone, weight }) => ({ id, label, zone, weight })),
       results: this.results,
+      driverHealthResults: this.driverHealthResults,
+      driverHealthReports: this.driverHealthReports,
       recommendations: this.recommendations
     };
   }
@@ -495,14 +766,16 @@ export class TuneSession {
     this.emit('info', { message: 'Baseline saved.' });
   }
 
-  /** Human tapped Apply — the only path that writes to the console. */
+  /** Human tapped Apply — the only path that writes to the console.
+   *  Correction always targets the BUS layer; physical outputs are never
+   *  individually EQ'd/delayed (see docs/DECISIONS.md "routing model"). */
   async apply() {
     if (this.state !== 'review' || !this.recommendations) return;
-    for (const output of this.cfg.outputs) {
-      const rec = this.recommendations.perOutput[output.id];
-      const delay = this.recommendations.delays[output.id];
+    for (const bus of this.cfg.buses) {
+      const rec = this.recommendations.perOutput[bus.id];
+      const delay = this.recommendations.delays[bus.id];
       if (!rec) continue;
-      await this.wing.applyTuning(output, rec.filters, delay?.addDelayMs ?? 0);
+      await this.wing.applyTuning(bus, rec.filters, delay?.addDelayMs ?? 0);
     }
     this.recommendations.applied = true;
     this.overwriteSessionRecord();

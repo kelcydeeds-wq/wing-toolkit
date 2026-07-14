@@ -131,47 +131,47 @@ test('MockOscTransport: subscribe/unsubscribe and the traffic log', async () => 
 });
 
 /* --------------------------- wing/client.js --------------------------- */
+// soloOutput()/unmuteAll() operate on BUSES and act on exactly the list
+// they're given -- enabled-filtering is session.js's job (activeBuses()),
+// not client.js's, so these tests pass an already-filtered bus list.
 
-const outputs = [
-  { id: 'main_l', enabled: true, wing: { type: 'main', num: 1 } },
-  { id: 'main_r', enabled: true, wing: { type: 'main', num: 2 } },
-  { id: 'fill_c', enabled: true, wing: { type: 'mtx', num: 2 } },
-  { id: 'disabled_out', enabled: false, wing: { type: 'main', num: 9 } }
+const buses = [
+  { id: 'mains', wing: { type: 'main', num: 1 } },
+  { id: 'sub', wing: { type: 'main', num: 2 } },
+  { id: 'center_fill', wing: { type: 'mtx', num: 2 } }
 ];
 
-test('LiveWing.soloOutput mutes every other enabled output and unmutes the soloed one (main + mtx paths)', async () => {
+test('LiveWing.soloOutput mutes every other bus and unmutes the soloed one (main + mtx paths)', async () => {
   const srv = fakeConsole();
   await srv.ready;
   const wing = makeWing({ mode: 'live', wing: { host: '127.0.0.1', port: srv.boundPort() } });
   try {
     await wing.ready;
-    await wing.soloOutput('main_l', outputs);
+    await wing.soloOutput('mains', buses);
     await wait(100);
 
     const byAddress = Object.fromEntries(srv.received.map((m) => [m.address, m.args[0]]));
-    assert.equal(byAddress['/main/1/mute'], 0, 'soloed output unmuted');
+    assert.equal(byAddress['/main/1/mute'], 0, 'soloed bus unmuted');
     assert.equal(byAddress['/main/2/mute'], 1, 'other main muted');
-    assert.equal(byAddress['/mtx/2/mute'], 1, 'matrix output muted via /mtx path');
-    assert.equal('/main/9/mute' in byAddress, false, 'disabled output is skipped entirely');
+    assert.equal(byAddress['/mtx/2/mute'], 1, 'matrix bus muted via /mtx path');
   } finally {
     wing.close(); srv.close();
   }
 });
 
-test('LiveWing.unmuteAll unmutes every enabled output', async () => {
+test('LiveWing.unmuteAll unmutes every bus passed to it', async () => {
   const srv = fakeConsole();
   await srv.ready;
   const wing = makeWing({ mode: 'live', wing: { host: '127.0.0.1', port: srv.boundPort() } });
   try {
     await wing.ready;
-    await wing.unmuteAll(outputs);
+    await wing.unmuteAll(buses);
     await wait(100);
 
     const addresses = srv.received.map((m) => m.address);
     assert.ok(addresses.includes('/main/1/mute'));
     assert.ok(addresses.includes('/main/2/mute'));
     assert.ok(addresses.includes('/mtx/2/mute'));
-    assert.ok(!addresses.includes('/main/9/mute'));
     assert.ok(srv.received.every((m) => m.args[0] === 0));
   } finally {
     wing.close(); srv.close();
@@ -228,18 +228,18 @@ test('LiveWing.applyTuning skips (and warns about) filters beyond the 6-band mai
   }
 });
 
-test('MockWing tracks solo state and applied tuning in memory, matching the pre-refactor mock contract', async () => {
+test('MockWing tracks solo state and applied tuning in memory, matching the mock contract', async () => {
   const wing = makeWing({ mode: 'mock' });
-  await wing.soloOutput('main_l', outputs);
-  assert.equal(wing.state.solo, 'main_l');
+  await wing.soloOutput('mains', buses);
+  assert.equal(wing.state.solo, 'mains');
 
-  await wing.unmuteAll(outputs);
+  await wing.unmuteAll(buses);
   assert.equal(wing.state.solo, null);
 
   const filters = [{ type: 'peq', freq: 100, gainDb: -2, q: 1.2 }];
-  await wing.applyTuning({ id: 'main_l' }, filters, 5);
+  await wing.applyTuning({ id: 'mains' }, filters, 5);
   assert.equal(wing.state.applied.length, 1);
-  assert.equal(wing.state.applied[0].output, 'main_l');
+  assert.equal(wing.state.applied[0].bus, 'mains');
   assert.equal(wing.state.applied[0].addDelayMs, 5);
   assert.deepEqual(wing.state.applied[0].filters, filters);
 });
