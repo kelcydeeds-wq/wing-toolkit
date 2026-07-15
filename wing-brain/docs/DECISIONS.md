@@ -3,6 +3,45 @@
 Running log of judgment calls made during autonomous work runs, so they can be
 reviewed and reversed if wrong.
 
+## 2026-07-15 — crossover handling, Piece 1: auto-detected passbands
+
+Full Tune now derives each output's ACTUAL acoustic passband from its
+averaged response (`detectPassband()` in `src/dsp/tune.js`) and proposes it
+in the review screen alongside the manually-configured `bus.band`. This is
+piece 1 of 3 — crossover-region EQ guarding and a summation-verification
+sweep are separate, not-yet-built follow-ups.
+
+- **Threshold is 10 dB down from the output's own in-band average, not the
+  textbook -3 dB half-power point.** A PA output's *usable* passband (the
+  range worth EQ'ing and delay-aligning) is broader than its flattest
+  region — -3 dB would chop off perfectly serviceable coverage at the
+  edges and produce a proposed band narrower than what's actually being
+  driven. 10 dB was specified up front and deliberately not second-guessed
+  down to -3/-6 dB.
+- **Scans outward from the response's overall peak, not from the
+  configured band's own average/edges.** The peak may sit outside the
+  currently-configured `band` entirely (wrong crossover assumption, a fill
+  that's brighter/darker than its label) — that's exactly the case this
+  feature exists to catch, so `detectPassband` never clamps its search to
+  the input `band` when finding the peak, only when computing the
+  threshold-setting average.
+- **Degenerate case (`lo >= hi`, e.g. wildly noisy data collapsing both
+  edges to the same rounded Hz value) falls back to returning the current
+  `band` unchanged**, rather than ever handing the operator a nonsense
+  proposed range.
+- **Apply writes `proposedBand` to `config.buses[].band` through the SAME
+  `validateConfig()` every other config write in `src/server.js` already
+  goes through — no new/separate validation path was invented for this.**
+  `applyProposedBands()` runs after `session.apply()`'s console writes
+  succeed; if validation somehow fails (defensive only — `detectPassband`
+  already guards the degenerate input case), it logs a warning and returns
+  without touching `session.state` or undoing the EQ/delay writes that
+  already landed on the console. No separate confirmation dialog for the
+  band specifically — the review screen already showed "proposed vs
+  current" before the operator tapped Apply, so Apply is the one consent
+  gate for filters/delays/band alike, same model as everything else in this
+  flow.
+
 ## 2026-07-15 — visual speaker/output editor, Stage 5: discovery-to-speaker flow
 
 Final stage: `POST /api/discover-outputs` rows that don't match an existing

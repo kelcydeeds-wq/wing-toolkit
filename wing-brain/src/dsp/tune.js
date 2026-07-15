@@ -137,6 +137,42 @@ export function recommendEQ({ freqs, avg, varDb, target, guardrails, band = [40,
 }
 
 /**
+ * Detect an output's ACTUAL acoustic passband from its averaged response,
+ * independent of the manually-configured `band` — a driver's real corner
+ * frequencies can drift from whatever was typed into the routing config
+ * (wrong crossover assumption, a fill that's brighter/darker than labeled,
+ * etc.), and this is what proposes a corrected band for the operator to
+ * review before Apply. Threshold is 10 dB down from the output's own
+ * in-band average — deliberately looser than a textbook -3 dB half-power
+ * point, because a PA output's *usable* passband (the range worth EQ'ing
+ * and delay-aligning) is broader than its flattest region.
+ */
+export function detectPassband({ freqs, magDb, band }) {
+  // Same "in-band average" pattern recommendEQ uses for mAvg/mTgt.
+  const inBand = (i) => freqs[i] >= band[0] && freqs[i] <= band[1];
+  let avg = 0, n = 0;
+  for (let i = 0; i < freqs.length; i++) if (inBand(i)) { avg += magDb[i]; n++; }
+  avg /= Math.max(n, 1);
+  const threshold = avg - 10;
+
+  // Peak over the FULL response, not clamped to `band` — the actual peak
+  // may sit outside the currently-configured band, which is exactly the
+  // case this function exists to catch.
+  let peakIdx = 0;
+  for (let i = 1; i < freqs.length; i++) if (magDb[i] > magDb[peakIdx]) peakIdx = i;
+
+  let loIdx = peakIdx;
+  while (loIdx > 0 && magDb[loIdx] >= threshold) loIdx--;
+  let hiIdx = peakIdx;
+  while (hiIdx < freqs.length - 1 && magDb[hiIdx] >= threshold) hiIdx++;
+
+  const lo = Math.round(freqs[loIdx]);
+  const hi = Math.round(freqs[hiIdx]);
+  if (lo >= hi) return { lo: band[0], hi: band[1] }; // degenerate/noisy data -- keep current band
+  return { lo, hi };
+}
+
+/**
  * Delay alignment: reference output (usually mains) stays at 0,
  * every other output gets delayed so arrivals match at the weighted listening area.
  * delays: { outputId: msAtEachPosition[] } — we align on the primary position set.

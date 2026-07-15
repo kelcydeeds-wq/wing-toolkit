@@ -31,7 +31,7 @@
 import { makeESS, makeBlip, scaleBuffer, extractIR, findDelay, magnitudeResponse,
          polarity, rmsDbfs, isClipped, estimateSnrDb, peakDbfs }
   from '../dsp/measure.js';
-import { spatialAverage, targetOnGrid, recommendEQ, recommendDelays }
+import { spatialAverage, targetOnGrid, recommendEQ, recommendDelays, detectPassband }
   from '../dsp/tune.js';
 import { buildAnalysisPayload, claudeTune, validate } from './advisor.js';
 import { activeTargetCurve } from '../config/settings.js';
@@ -738,9 +738,18 @@ export class TuneSession {
         band: bus.band
       });
 
+      // Proposed vs current passband (piece 1 of crossover handling) -- the
+      // ACTUAL acoustic range this output covers, detected from the same
+      // spatially-averaged response recommendEQ was just given, vs the
+      // manually-configured band. Shown in review; only written to
+      // config.buses[].band on Apply (see src/server.js's apply handler).
+      const proposedBand = detectPassband({ freqs: Float64Array.from(grid), magDb: avg, band: bus.band });
+
       perOutput[bus.id] = {
         label: bus.label,
         filters,
+        band: bus.band,
+        proposedBand,
         avg: Array.from(avg), varDb: Array.from(varDb),
         target: Array.from(target), freqs: grid,
         polarityIssue: rs.some((r) => r.polarity < 0),

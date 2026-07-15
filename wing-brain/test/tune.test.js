@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
 import fs from 'node:fs';
-import { spatialAverage, targetOnGrid, recommendEQ, recommendDelays }
+import { spatialAverage, targetOnGrid, recommendEQ, recommendDelays, detectPassband }
   from '../src/dsp/tune.js';
 import { activeTargetCurve } from '../src/config/settings.js';
 
@@ -221,4 +221,40 @@ test('recommendEQ full-range output can get an HF tilt shelf; parametrics stay b
   for (const f of filters.filter((x) => x.type === 'peq')) {
     assert.ok(f.freq <= g.eqAutoMaxHz, `parametric at ${f.freq} Hz above eqAutoMaxHz`);
   }
+});
+
+/* ------------------- auto-detected passband (piece 1) ----------------- */
+
+test('detectPassband: flat response over a known range with falloff outside recovers close to that range', () => {
+  const magDb = flat().fill(-20); // floor well below the -10 dB threshold everywhere
+  for (let i = 0; i < grid.length; i++) {
+    if (grid[i] >= 100 && grid[i] <= 4000) magDb[i] = 0; // flat plateau
+  }
+  const { lo, hi } = detectPassband({ freqs: grid, magDb, band: [100, 4000] });
+  // Log-grid resolution (~4.7%/step over 128 pts, 20 Hz-20 kHz) means the
+  // recovered edges land within one bin of the true step transition.
+  assert.ok(Math.abs(Math.log2(lo / 100)) < 0.1, `lo=${lo} not close to 100`);
+  assert.ok(Math.abs(Math.log2(hi / 4000)) < 0.1, `hi=${hi} not close to 4000`);
+});
+
+test('detectPassband: real peak outside the currently-configured band is still found, not clamped to band edges', () => {
+  const magDb = flat().fill(-30); // floor
+  for (let i = 0; i < grid.length; i++) {
+    if (grid[i] >= 40 && grid[i] <= 300) magDb[i] = -8;      // modest bump inside the CONFIGURED band
+    if (grid[i] >= 400 && grid[i] <= 2500) magDb[i] = 0;     // the ACTUAL (louder) peak, outside it
+  }
+  // Configured band only covers the modest bump, not the real peak.
+  const { lo, hi } = detectPassband({ freqs: grid, magDb, band: [40, 300] });
+  assert.ok(lo >= 350 && lo <= 450, `expected lo near the real peak plateau (~400), got ${lo}`);
+  assert.ok(hi >= 2000 && hi <= 3000, `expected hi near the real peak plateau (~2500), got ${hi}`);
+});
+
+test('detectPassband: degenerate/noisy data (edges collapse to the same rounded Hz value) falls back to the current band', () => {
+  // Two adjacent bins close enough together that they round to the same
+  // integer Hz -- the lo/hi edges collapse to a single point, which is the
+  // "nonsense" result the function must guard against rather than return.
+  const freqs = Float64Array.from([999.6, 1000.4]);
+  const magDb = Float64Array.from([0, 0]);
+  const result = detectPassband({ freqs, magDb, band: [900, 1100] });
+  assert.deepEqual(result, { lo: 900, hi: 1100 }, 'falls back to the current band unchanged');
 });

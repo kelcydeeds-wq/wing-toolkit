@@ -370,6 +370,44 @@ app.post('/api/test-wing', async (req, res) => {
   }
 });
 
+/** After apply() writes EQ/delay to the console, persist each bus's
+ *  auto-detected proposedBand (piece 1 of crossover handling) to
+ *  config.buses[].band -- same consent gate as the EQ filters: the review
+ *  screen already showed "proposed vs current" before the operator tapped
+ *  Apply, so this is not a hidden write. Goes through the SAME
+ *  validateConfig every other config write uses (no separate validation
+ *  path), and a validation failure here must never undo/block the console
+ *  writes that already succeeded. */
+function applyProposedBands() {
+  const perOutput = session.recommendations?.perOutput;
+  if (!perOutput) return;
+
+  let changed = false;
+  const nextConfig = {
+    ...config,
+    buses: config.buses.map((bus) => {
+      const proposed = perOutput[bus.id]?.proposedBand;
+      if (!proposed) return bus;
+      if (proposed.lo === bus.band[0] && proposed.hi === bus.band[1]) return bus;
+      changed = true;
+      return { ...bus, band: [proposed.lo, proposed.hi] };
+    })
+  };
+  if (!changed) return;
+
+  const errors = validateConfig(nextConfig, room);
+  if (errors.length) {
+    console.warn('[server] apply: proposed passband(s) failed validateConfig, band not persisted:', errors);
+    return;
+  }
+
+  writeJsonAtomic(CONFIG_PATH, nextConfig);
+  config = nextConfig;
+  buildRuntime();
+  broadcast('config', { config, room });
+  broadcast('session', session.snapshot());
+}
+
 /* ------------------------------- WebSocket ------------------------------- */
 
 wss.on('connection', (ws) => {
@@ -390,7 +428,7 @@ wss.on('connection', (ws) => {
         case 'preflight': await session.preflightCheck(); break;
         case 'ready':    await session.ready(); break;
         case 'retake':   session.retake(); break;
-        case 'apply':    await session.apply(); break;            // the only console write
+        case 'apply':    await session.apply(); applyProposedBands(); break; // the only console write
         case 'baseline': session.saveBaseline(); break;
         case 'reset':    session.state = 'idle'; broadcast('session', session.snapshot()); break;
         // Shared-driver measurement wizard (routing model section 3).

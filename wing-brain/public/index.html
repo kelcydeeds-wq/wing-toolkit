@@ -552,7 +552,14 @@ function renderReview(){
     const hasOverlay = o.positions?.length > 1;
     let frows = o.filters.map(f =>
       `<tr><td>${f.type}</td><td class="num">${f.freq} Hz</td><td class="num">${f.gainDb>0?'+':''}${f.gainDb} dB</td><td class="num">Q ${f.q}</td><td style="color:var(--dim)">${f.reason}</td></tr>`).join('');
+    // Auto-detected passband vs the currently-configured band (piece 1 of
+    // crossover handling) — only shown when they actually differ; Apply
+    // writes proposedBand to config.buses[].band, same consent gate as the
+    // filters above, no separate confirmation needed here.
+    const bandChanged = o.proposedBand && o.band &&
+      (o.proposedBand.lo !== o.band[0] || o.proposedBand.hi !== o.band[1]);
     el.insertAdjacentHTML('beforeend', `<div class="card"><h2>${o.label}${o.polarityIssue?' — <span class="warn">check polarity</span>':''}</h2>${o.note?`<p style="color:var(--dim);font-size:13px;margin:0 0 8px">${o.note}</p>`:''}
+      ${bandChanged?`<p style="color:var(--dim);font-size:13px;margin:0 0 8px">Proposed band: ${o.proposedBand.lo}–${o.proposedBand.hi} Hz (current: ${o.band[0]}–${o.band[1]} Hz)</p>`:''}
       <canvas class="trace" id="${cid}" width="560" height="180"></canvas>
       <div class="legend" id="legend_${id}"></div>
       ${hasOverlay?`<button class="secondary" id="toggle_${id}" style="margin:8px 0 0"></button>`:''}

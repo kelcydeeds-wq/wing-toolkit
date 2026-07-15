@@ -360,6 +360,25 @@ test('one low-confidence position among several does not block a bus that has ot
   assert.deepEqual(rec.busesWithNoUsableData, []);
 });
 
+/* -------------------- auto-detected passband (piece 1) -------------------- */
+
+test('buildRecommendations attaches the current band and an auto-detected proposedBand to each perOutput entry', async () => {
+  const audio = { playAndCapture: async () => cleanCapture(20) };
+  const oneOutputRoom = { ...room, positions: room.positions.filter((p) => p.id === 'p1') };
+  const session = newSession({ config: oneOutputConfig(), room: oneOutputRoom, audio, wing: fakeWing(), emit: () => {} });
+  session.start('full');
+  await session.ready(); // only position -> finish() runs automatically
+
+  const rec = session.buildRecommendations();
+  const bus = oneOutputConfig().buses[0];
+  assert.ok(rec.perOutput.sub, 'sub bus should have a usable correction');
+  assert.deepEqual(rec.perOutput.sub.band, bus.band, 'band echoes the currently-configured band');
+  assert.ok(rec.perOutput.sub.proposedBand, 'proposedBand is attached');
+  assert.ok(Number.isFinite(rec.perOutput.sub.proposedBand.lo));
+  assert.ok(Number.isFinite(rec.perOutput.sub.proposedBand.hi));
+  assert.ok(rec.perOutput.sub.proposedBand.lo < rec.perOutput.sub.proposedBand.hi);
+});
+
 test('finish() warns about excluded measurements and buses left with no usable data', async () => {
   const audio = { playAndCapture: async () => noiseCapture() };
   const log = [];
