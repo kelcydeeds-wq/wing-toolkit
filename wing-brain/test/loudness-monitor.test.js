@@ -9,7 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { rmsDbfs } from '../src/dsp/measure.js';
 import {
-  STATUS, parseIntegrationWindowSeconds, computeSplOffset, dbfsToSpl,
+  STATUS, parseIntegrationWindowSeconds, computeSplOffset, dbfsToSpl, splToDbfs,
   LeqAccumulator, LevelClassifier, mockLoudnessFrame, LoudnessMonitor, listLoudnessHistory
 } from '../src/audio/loudness-monitor.js';
 
@@ -35,6 +35,18 @@ test('computeSplOffset + dbfsToSpl round-trip: applying the offset reproduces th
 test('dbfsToSpl treats a null/undefined offset as uncalibrated (0 dB, reports raw dBFS)', () => {
   assert.equal(dbfsToSpl(-20, null), -20);
   assert.equal(dbfsToSpl(-20, undefined), -20);
+});
+
+test('splToDbfs is the exact inverse of dbfsToSpl for the same offset', () => {
+  const offsetDb = 116.6; // e.g. computeSplOffset(-22.4, 94.2)
+  const dbfs = -25;
+  const spl = dbfsToSpl(dbfs, offsetDb);
+  assert.ok(Math.abs(splToDbfs(spl, offsetDb) - dbfs) < 1e-9);
+});
+
+test('splToDbfs treats a null/undefined offset as uncalibrated (0 dB, target SPL taken as dBFS directly)', () => {
+  assert.equal(splToDbfs(90, null), 90);
+  assert.equal(splToDbfs(90, undefined), 90);
 });
 
 /* -------------------------------- LEQ math -------------------------------- */

@@ -90,6 +90,24 @@ export function validateConfig(config, room) {
   if (!isNum(s.levelDbfs) || s.levelDbfs > -6 || s.levelDbfs < -60) {
     bad('audio.sweep.levelDbfs: must be -60 to -6 dBFS (headroom is not optional)');
   }
+  if (s.targetSplDb !== undefined && s.targetSplDb !== null) {
+    if (!isNum(s.targetSplDb) || s.targetSplDb < 40 || s.targetSplDb > 120) {
+      bad('audio.sweep.targetSplDb: must be null (disabled) or 40-120 dB SPL');
+    }
+  }
+  if (s.maxLevelDbfs !== undefined) {
+    if (!isNum(s.maxLevelDbfs) || s.maxLevelDbfs > -6 || s.maxLevelDbfs < -60) {
+      bad('audio.sweep.maxLevelDbfs: must be -60 to -6 dBFS');
+    } else if (isNum(s.levelDbfs) && s.maxLevelDbfs < s.levelDbfs) {
+      bad('audio.sweep.maxLevelDbfs: must be >= audio.sweep.levelDbfs (it is a ceiling for auto-raise, not a floor)');
+    }
+  }
+  if (s.minSnrMarginDb !== undefined && (!isNum(s.minSnrMarginDb) || s.minSnrMarginDb < 0 || s.minSnrMarginDb > 40)) {
+    bad('audio.sweep.minSnrMarginDb: must be 0-40 dB');
+  }
+  if (s.ambientCheckSeconds !== undefined && (!isNum(s.ambientCheckSeconds) || s.ambientCheckSeconds < 0.2 || s.ambientCheckSeconds > 5)) {
+    bad('audio.sweep.ambientCheckSeconds: must be 0.2-5 seconds');
+  }
 
   if (a.preflight !== undefined) {
     const pf = a.preflight;

@@ -3,6 +3,63 @@
 Running log of judgment calls made during autonomous work runs, so they can be
 reviewed and reversed if wrong.
 
+## 2026-07-15 — level-aware sweep control: target-SPL sweep level + auto-SNR safety net
+
+Two additive features on top of the existing loudness-monitor calibration
+(`config.audio.splDbOffset`), both in `src/tune/session.js`:
+
+- **Target-SPL sweep level** (`config.audio.sweep.targetSplDb`, default 90):
+  once the loudness monitor has been calibrated once (Settings → Loudness →
+  Calibrate), every sweep computes its own level from that stored offset via
+  `computeSweepLevelDbfs()` → `splToDbfs()` (the new, exact inverse of
+  `loudness-monitor.js`'s existing `dbfsToSpl()` — literally the same
+  formula solved the other way, not a re-derivation). No live/manual SPL
+  reading is ever required per sweep or per position — the calibration is
+  one-time, `TuneSession`'s constructor computes the effective level ONCE
+  and bakes it into the sweep buffer via `makeESS()`, same as before.
+  Uncalibrated (`splDbOffset` still `null`, the shipped default) falls back
+  to the existing fixed `audio.sweep.levelDbfs`, unchanged behavior. The
+  computed value is clamped into the same -60..-6 dBFS band `levelDbfs`
+  itself is validated against — a target SPL that's absurd for the
+  calibrated room degrades to a safe boundary level instead of a config
+  crash or a hearing-damage-range sweep. Settings shows the live-computed
+  dBFS next to the target-SPL field (client-side arithmetic, same formula)
+  so the number is never a black box, plus the "calibrate for SPL-accurate
+  levels" fallback note when uncalibrated.
+- **Auto-SNR safety net** (`minSnrMarginDb` default 20, `maxLevelDbfs`
+  default -6, `ambientCheckSeconds` default 1): before every sweep attempt
+  (including the existing low-confidence retry), ~1s of ambient noise is
+  captured on the mic channel and compared against the planned sweep level
+  (base level + the bus's `sweepTrimDb`). If the margin wouldn't hold, the
+  sweep is raised just enough to clear it, capped at `maxLevelDbfs`, and
+  logged via the existing `emit('info', ...)` channel — this is exactly the
+  failure mode that produced a bogus low-confidence delay reading at
+  church (quiet sweep swamped by ambient noise), now closed automatically
+  with zero operator involvement.
+
+**Design choice: `audio.captureAmbient()` is a NEW, separately
+feature-detected method**, not a reuse of the existing `playAndCapture()`
+with a silent buffer. `session.test.js` has ~20 existing tests that script
+exact `playAndCapture()` call sequences/counts (the low-confidence-retry
+tests especially — see the file's own comment about a call-counter bug
+caught twice earlier in this project). Threading the ambient probe through
+that same method would have silently consumed an extra scripted call in
+every one of those tests, corrupting their assertions without any of them
+visibly failing for the right reason. Feature-detecting a separate method
+(mirroring the existing `audio.setScenario` pattern) means every plain
+`{ playAndCapture }` test double — old and new — is completely unaffected;
+the safety net is opt-in per AudioIO implementation. Both `MockAudioIO` and
+`LiveAudioIO` (in `src/audio/io.js`) implement it: Mock returns the same
+mild noise-floor term `playAndCapture()` already adds (a realistic "quiet
+room" reading, so the safety net stays a no-op in default mock demos); Live
+reads the same already-open duplex stream without writing playback.
+
+Scope is deliberately limited to the ESS sweep (`runSweep()`), not
+`preflightCheck()`'s go/no-go blip or the shared-driver wizard's
+by-ear confidence tone — the request was specifically about sweep
+measurement quality, and widening scope to every test signal in the app
+wasn't asked for.
+
 ## 2026-07-15 — live audio: sox/MME replaced with naudiodon/ASIO (root cause of the 300-500ms reading)
 
 Diagnosed entirely by reading code — no church visit needed for this part.

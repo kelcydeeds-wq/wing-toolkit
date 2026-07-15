@@ -926,8 +926,13 @@ function renderSettings(){
       ${frow('Reference capture channel', num('set_ref_ch', C.audio.referenceInputChannel, 'min="1" max="64"'))}
       ${frow('Mic capture channel', num('set_mic_ch', C.audio.micInputChannel, 'min="1" max="64"'))}
       ${frow('Sweep length (s)', num('set_sweep_s', C.audio.sweep.seconds, 'min="1" max="30"'))}
-      ${frow('Sweep level (dBFS)', num('set_sweep_lvl', C.audio.sweep.levelDbfs, 'min="-60" max="-6"'))}
-      <p class="hint">Level is capped at -6 dBFS — sweep headroom is not optional.</p>
+      ${frow('Sweep level (dBFS, fallback)', num('set_sweep_lvl', C.audio.sweep.levelDbfs, 'min="-60" max="-6"'))}
+      <p class="hint">Level is capped at -6 dBFS — sweep headroom is not optional. Used as-is only when the loudness monitor isn't calibrated (see below).</p>
+      ${frow('Target SPL for sweeps (dB)', num('set_target_spl', C.audio.sweep.targetSplDb ?? 90, 'min="40" max="120"'))}
+      <p class="hint" id="sweepLevelHint"></p>
+      ${frow('Max auto-raised level (dBFS)', num('set_max_lvl', C.audio.sweep.maxLevelDbfs ?? -6, 'min="-60" max="-6"'))}
+      ${frow('Min SNR margin for auto-raise (dB)', num('set_snr_margin', C.audio.sweep.minSnrMarginDb ?? 20, 'min="0" max="40"'))}
+      <p class="hint">Auto-SNR check: before every sweep, ~1s of ambient noise is measured on the mic channel. If the planned level wouldn't clear it by the margin above, the sweep is automatically raised (never above the max) — no operator action needed.</p>
       <div class="cardfoot"><button class="small" id="save_audio" disabled>Save</button></div>
     </div>
 
@@ -1035,7 +1040,8 @@ function renderSettings(){
   };
   wire('console', ['set_wing_host', 'set_wing_port']);
   document.querySelectorAll('input[name=set_mode]').forEach((r) => r.addEventListener('change', () => markDirty('console')));
-  wire('audio', ['set_in_dev', 'set_out_dev', 'set_ref_ch', 'set_mic_ch', 'set_sweep_s', 'set_sweep_lvl']);
+  wire('audio', ['set_in_dev', 'set_out_dev', 'set_ref_ch', 'set_mic_ch', 'set_sweep_s', 'set_sweep_lvl',
+    'set_target_spl', 'set_max_lvl', 'set_snr_margin']);
   $('busesTable').addEventListener('input', () => markDirty('buses'));
   $('busesTable').addEventListener('change', () => markDirty('buses'));
   $('physicalOutputsTable').addEventListener('input', () => markDirty('physical_outputs'));
@@ -1082,8 +1088,30 @@ function renderSettings(){
     outputDevice: $('set_out_dev').value.trim(),
     referenceInputChannel: Number($('set_ref_ch').value),
     micInputChannel: Number($('set_mic_ch').value),
-    sweep: { seconds: Number($('set_sweep_s').value), levelDbfs: Number($('set_sweep_lvl').value) }
+    sweep: {
+      seconds: Number($('set_sweep_s').value), levelDbfs: Number($('set_sweep_lvl').value),
+      targetSplDb: Number($('set_target_spl').value), maxLevelDbfs: Number($('set_max_lvl').value),
+      minSnrMarginDb: Number($('set_snr_margin').value)
+    }
   }}});
+
+  // Live transparency readout: what dBFS the target-SPL config above
+  // actually computes to, using the SAME math as the loudness monitor's
+  // dbfsToSpl (see src/tune/session.js's computeSweepLevelDbfs / splToDbfs)
+  // -- not a black box. Falls back to a note when uncalibrated.
+  const updateSweepLevelHint = () => {
+    const el = $('sweepLevelHint');
+    const targetSplDb = Number($('set_target_spl').value);
+    const offsetDb = C.audio.splDbOffset;
+    if (offsetDb == null) {
+      el.textContent = 'Calibrate loudness monitor for SPL-accurate sweep levels — using the fixed dBFS level above for now.';
+    } else {
+      const computed = Math.max(-60, Math.min(-6, targetSplDb - offsetDb));
+      el.textContent = `→ computed sweep level: ${computed.toFixed(1)} dBFS (from the loudness monitor's calibrated offset)`;
+    }
+  };
+  updateSweepLevelHint();
+  $('set_target_spl').addEventListener('input', updateSweepLevelHint);
 
   /* --- card 3a: buses --- */
   $('save_buses').onclick = () => {

@@ -5,8 +5,8 @@ import assert from 'node:assert';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { TuneSession } from '../src/tune/session.js';
-import { makeESS, fftConvolve, peakDbfs } from '../src/dsp/measure.js';
+import { TuneSession, computeSweepLevelDbfs } from '../src/tune/session.js';
+import { makeESS, fftConvolve, peakDbfs, rmsDbfs } from '../src/dsp/measure.js';
 
 const config = JSON.parse(fs.readFileSync(new URL('../config/default.json', import.meta.url), 'utf8'));
 const room = JSON.parse(fs.readFileSync(new URL('../config/room.json', import.meta.url), 'utf8'));
@@ -369,4 +369,112 @@ test('recommendDelays only ever sees confidence-filtered rows (a noisy reading c
   // With only the clean 20ms readings, it should sit right at ~20ms.
   assert.ok(Math.abs(rec.delays.sub.measuredMs - 20) < 2,
     `measuredMs should reflect only the clean ~20ms measurements, got ${rec.delays.sub.measuredMs}ms`);
+});
+
+/* -------------------- level-aware sweep control -------------------- */
+// config.audio.sweep.targetSplDb + splDbOffset (one-time loudness-monitor
+// calibration) compute a representative sweep level automatically -- no
+// live/manual SPL reading per sweep or per position. Separately, an
+// auto-SNR safety net captures ~1s of ambient noise before every sweep and
+// raises the level (capped at maxLevelDbfs) if it wouldn't clear the noise
+// floor by minSnrMarginDb. The auto-SNR check is feature-detected on
+// audio.captureAmbient (see checkAmbientAndMaybeRaise's doc comment) so
+// every plain `{ playAndCapture }` test double above this section is
+// completely unaffected -- no extra scripted call to account for.
+
+test('computeSweepLevelDbfs falls back to the fixed levelDbfs when splDbOffset is uncalibrated', () => {
+  const r = computeSweepLevelDbfs({ splDbOffset: null, sweep: { levelDbfs: -18, targetSplDb: 90 } });
+  assert.deepEqual(r, { levelDbfs: -18, calibrated: false });
+});
+
+test('computeSweepLevelDbfs computes dBFS from targetSplDb + splDbOffset once calibrated', () => {
+  // dbfsToSpl(-24, 114) === 90 -> splToDbfs(90, 114) === -24
+  const r = computeSweepLevelDbfs({ splDbOffset: 114, sweep: { levelDbfs: -18, targetSplDb: 90 } });
+  assert.equal(r.calibrated, true);
+  assert.ok(Math.abs(r.levelDbfs - -24) < 1e-9);
+});
+
+test('computeSweepLevelDbfs clamps the computed level into the safe -60..-6 dBFS band', () => {
+  const tooQuiet = computeSweepLevelDbfs({ splDbOffset: 200, sweep: { levelDbfs: -18, targetSplDb: 90 } }); // needed = -110
+  assert.equal(tooQuiet.levelDbfs, -60);
+  const tooLoud = computeSweepLevelDbfs({ splDbOffset: -100, sweep: { levelDbfs: -18, targetSplDb: 90 } }); // needed = 190
+  assert.equal(tooLoud.levelDbfs, -6);
+});
+
+test('TuneSession builds its sweep buffer at the target-SPL-derived level once calibrated', () => {
+  const cfg = { ...oneOutputConfig(), audio: { ...config.audio, splDbOffset: 114, sweep: { ...config.audio.sweep, targetSplDb: 90 } } };
+  const session = newSession({ config: cfg, room, audio: { playAndCapture: async () => cleanCapture(20) }, wing: fakeWing(), emit: () => {} });
+
+  assert.equal(session.sweepLevelCalibrated, true);
+  assert.ok(Math.abs(session.baseSweepLevelDbfs - -24) < 1e-6);
+  assert.ok(Math.abs(peakDbfs(session.sweep) - -24) < 0.5,
+    'built sweep buffer amplitude should reflect the computed target-SPL level');
+});
+
+test('TuneSession falls back to the fixed levelDbfs when uncalibrated (splDbOffset null)', () => {
+  const cfg = oneOutputConfig(); // config/default.json ships splDbOffset: null
+  const session = newSession({ config: cfg, room, audio: { playAndCapture: async () => cleanCapture(20) }, wing: fakeWing(), emit: () => {} });
+
+  assert.equal(session.sweepLevelCalibrated, false);
+  assert.equal(session.baseSweepLevelDbfs, config.audio.sweep.levelDbfs);
+});
+
+test('auto-SNR check raises the sweep level when a loud ambient noise floor would swamp it', async () => {
+  let captured = { peak: null };
+  // oneOutputConfig() uses the "sub" bus, which carries a -6 dB sweepTrimDb --
+  // the planned level for THIS bus is levelDbfs + sweepTrimDb, not the raw
+  // config value.
+  const plannedLevelDbfs = config.audio.sweep.levelDbfs + config.buses.find((b) => b.id === 'sub').sweepTrimDb;
+  const audio = {
+    captureAmbient: async (seconds) => {
+      // Loud ambient noise: ~-30 dBFS RMS, well above the -24 dBFS planned sweep level.
+      const n = Math.floor(seconds * sr);
+      const mic = new Float64Array(n);
+      const gain = Math.pow(10, -25 / 20);
+      for (let i = 0; i < n; i++) mic[i] = (Math.random() * 2 - 1) * gain;
+      return { mic };
+    },
+    playAndCapture: async (sweepBuf) => {
+      captured.peak = peakDbfs(sweepBuf);
+      return cleanCapture(20);
+    }
+  };
+  const { log, emit } = collectEvents();
+  const session = newSession({ config: oneOutputConfig(), room, audio, wing: fakeWing(), emit });
+
+  session.start('verify');
+  await session.ready();
+
+  assert.ok(captured.peak > plannedLevelDbfs + 1,
+    `sweep level should have been auto-raised above the planned ${plannedLevelDbfs} dBFS, got ${captured.peak}`);
+  assert.ok(captured.peak <= config.audio.sweep.maxLevelDbfs + 0.1, 'raise must stay capped at maxLevelDbfs');
+  assert.ok(log.some((e) => e.event === 'info' && /auto-raised sweep level/.test(e.payload.message)));
+});
+
+test('auto-SNR check does not raise the sweep level when ambient noise is already well clear', async () => {
+  const plannedLevelDbfs = config.audio.sweep.levelDbfs + config.buses.find((b) => b.id === 'sub').sweepTrimDb;
+  let captured = { peak: null };
+  const audio = {
+    captureAmbient: async () => ({ mic: new Float64Array(48000).fill(0) }), // silence
+    playAndCapture: async (sweepBuf) => { captured.peak = peakDbfs(sweepBuf); return cleanCapture(20); }
+  };
+  const { log, emit } = collectEvents();
+  const session = newSession({ config: oneOutputConfig(), room, audio, wing: fakeWing(), emit });
+
+  session.start('verify');
+  await session.ready();
+
+  assert.ok(Math.abs(captured.peak - plannedLevelDbfs) < 0.5, 'sweep level should stay at its planned level');
+  assert.ok(!log.some((e) => e.event === 'info' && /auto-raised sweep level/.test(e.payload.message)));
+});
+
+test('auto-SNR check is a no-op for audio implementations without captureAmbient (backward compatible)', async () => {
+  let calls = 0;
+  const audio = { playAndCapture: async () => { calls++; return cleanCapture(20); } };
+  const session = newSession({ config: oneOutputConfig(), room, audio, wing: fakeWing(), emit: () => {} });
+
+  session.start('verify');
+  await session.ready();
+
+  assert.equal(calls, 1, 'no extra ambient-probe call when captureAmbient is not implemented');
 });

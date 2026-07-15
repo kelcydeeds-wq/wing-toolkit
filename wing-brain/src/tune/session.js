@@ -35,6 +35,7 @@ import { spatialAverage, targetOnGrid, recommendEQ, recommendDelays }
   from '../dsp/tune.js';
 import { buildAnalysisPayload, claudeTune, validate } from './advisor.js';
 import { activeTargetCurve } from '../config/settings.js';
+import { splToDbfs } from '../audio/loudness-monitor.js';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -42,6 +43,29 @@ const DEFAULT_DATA_DIR = 'data';
 const MAX_SESSION_HISTORY = 5;
 const LOW_CONFIDENCE_THRESHOLD = 3;
 const LOW_SNR_THRESHOLD_DB = 15;
+const DEFAULT_MIN_SNR_MARGIN_DB = 20;
+const DEFAULT_AMBIENT_CHECK_SECONDS = 1;
+const MIN_SWEEP_LEVEL_DBFS = -60;
+const MAX_SWEEP_LEVEL_DBFS = -6;
+
+/**
+ * Effective base sweep level in dBFS. When audio.splDbOffset has been
+ * calibrated (see loudness-monitor.js's one-time Calibrate flow), computes
+ * the dBFS needed to hit audio.sweep.targetSplDb via splToDbfs -- the exact
+ * inverse of the loudness monitor's own dbfsToSpl -- so every sweep reuses
+ * that one calibration automatically, with no per-sweep/per-position manual
+ * SPL reading. Falls back to the fixed audio.sweep.levelDbfs when
+ * uncalibrated. Exported so Settings can show the same computed value.
+ */
+export function computeSweepLevelDbfs(audioCfg) {
+  const s = audioCfg.sweep;
+  if (audioCfg.splDbOffset === null || audioCfg.splDbOffset === undefined) {
+    return { levelDbfs: s.levelDbfs, calibrated: false };
+  }
+  const needed = splToDbfs(s.targetSplDb, audioCfg.splDbOffset);
+  const levelDbfs = Math.min(MAX_SWEEP_LEVEL_DBFS, Math.max(MIN_SWEEP_LEVEL_DBFS, needed));
+  return { levelDbfs, calibrated: true, uncappedLevelDbfs: needed };
+}
 
 /** List saved session records, newest first. At most MAX_SESSION_HISTORY
  *  files ever exist, so reading each one fully for its metadata is cheap.
@@ -95,7 +119,10 @@ export class TuneSession {
     this.preflightResults = [];
 
     const s = config.audio.sweep;
-    const { sweep, inverse } = makeESS({ ...s, sampleRate: config.audio.sampleRate });
+    const { levelDbfs: effectiveLevelDbfs, calibrated: sweepLevelCalibrated } = computeSweepLevelDbfs(config.audio);
+    this.sweepLevelCalibrated = sweepLevelCalibrated;
+    this.baseSweepLevelDbfs = effectiveLevelDbfs;
+    const { sweep, inverse } = makeESS({ ...s, levelDbfs: effectiveLevelDbfs, sampleRate: config.audio.sampleRate });
     this.sweep = sweep;
     this.inverse = inverse;
     this.captureSeconds = s.seconds + s.padSeconds;
@@ -232,12 +259,50 @@ export class TuneSession {
    * the magnitude/delay results, only the captured levelDbfs and headroom.
    */
   async runSweep(bus) {
-    const sweep = scaleBuffer(this.sweep, bus?.sweepTrimDb);
+    const trimmed = scaleBuffer(this.sweep, bus?.sweepTrimDb);
+    const { raiseDb, noiseFloorDbfs } = await this.checkAmbientAndMaybeRaise(bus);
+    const sweep = raiseDb > 0 ? scaleBuffer(trimmed, raiseDb) : trimmed;
+    if (raiseDb > 0) {
+      this.emit('info', {
+        message: `${bus.label}: ambient noise ~${noiseFloorDbfs.toFixed(1)} dBFS — auto-raised sweep level by ${raiseDb.toFixed(1)} dB to keep a clean margin.`
+      });
+    }
     const { ref, mic } = await this.audio.playAndCapture(sweep, this.captureSeconds);
     const delay = findDelay(ref, mic, this.cfg.audio.sampleRate);
     const ir = extractIR(mic, this.inverse, this.cfg.audio.sampleRate);
     const { freqs, magDb } = magnitudeResponse(ir, this.cfg.audio.sampleRate);
     return { ref, mic, delay, ir, freqs, magDb };
+  }
+
+  /**
+   * Auto-SNR safety net: capture ~1s of ambient noise on the mic channel
+   * and, if the planned sweep level wouldn't clear it by minSnrMarginDb,
+   * report how much to raise the sweep by (capped at maxLevelDbfs). Zero
+   * operator involvement -- runs before every sweep attempt, including the
+   * low-confidence retry in measureOnePhysicalOutput().
+   *
+   * Feature-detected on `audio.captureAmbient` (like `audio.setScenario`)
+   * rather than reusing playAndCapture for the probe -- a dedicated method
+   * keeps this fully opt-in for any AudioIO/test double that doesn't
+   * implement it, instead of silently consuming an extra scripted
+   * playAndCapture() call every test double would otherwise need to expect.
+   */
+  async checkAmbientAndMaybeRaise(bus) {
+    if (!this.audio.captureAmbient) return { raiseDb: 0, noiseFloorDbfs: null };
+    const s = this.cfg.audio.sweep;
+    const marginDb = s.minSnrMarginDb ?? DEFAULT_MIN_SNR_MARGIN_DB;
+    const maxLevelDbfs = s.maxLevelDbfs ?? MAX_SWEEP_LEVEL_DBFS;
+    const ambientSeconds = s.ambientCheckSeconds ?? DEFAULT_AMBIENT_CHECK_SECONDS;
+
+    const { mic } = await this.audio.captureAmbient(ambientSeconds);
+    const noiseFloorDbfs = rmsDbfs(mic);
+
+    const plannedLevelDbfs = this.baseSweepLevelDbfs + (bus?.sweepTrimDb ?? 0);
+    const neededLevelDbfs = noiseFloorDbfs + marginDb;
+    if (neededLevelDbfs <= plannedLevelDbfs) return { raiseDb: 0, noiseFloorDbfs };
+    const targetLevelDbfs = Math.min(neededLevelDbfs, maxLevelDbfs);
+    const raiseDb = Math.max(0, targetLevelDbfs - plannedLevelDbfs);
+    return { raiseDb, noiseFloorDbfs };
   }
 
   /**

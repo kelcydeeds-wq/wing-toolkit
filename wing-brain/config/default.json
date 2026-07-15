@@ -29,7 +29,11 @@
       "f2": 20000,
       "seconds": 6,
       "padSeconds": 2,
-      "levelDbfs": -18
+      "levelDbfs": -18,
+      "targetSplDb": 90,
+      "maxLevelDbfs": -6,
+      "minSnrMarginDb": 20,
+      "ambientCheckSeconds": 1
     },
     "preflight": {
       "blipFreq": 1000,

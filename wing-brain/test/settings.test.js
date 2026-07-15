@@ -242,6 +242,40 @@ test('accepts audio.splDbOffset = null (uncalibrated) and rejects an out-of-rang
   assert.ok(validateConfig(cfg).some((e) => /splDbOffset/.test(e)));
 });
 
+test('accepts audio.sweep.targetSplDb within 40-120 dB SPL and rejects outside it', () => {
+  const cfg = goodConfig();
+  cfg.audio.sweep.targetSplDb = 90;
+  assert.deepEqual(validateConfig(cfg), []);
+  cfg.audio.sweep.targetSplDb = 30;
+  assert.ok(validateConfig(cfg).some((e) => /targetSplDb/.test(e)));
+  cfg.audio.sweep.targetSplDb = 130;
+  assert.ok(validateConfig(cfg).some((e) => /targetSplDb/.test(e)));
+});
+
+test('rejects audio.sweep.maxLevelDbfs outside -60..-6, or below levelDbfs (it is a ceiling, not a floor)', () => {
+  const cfg = goodConfig();
+  cfg.audio.sweep.maxLevelDbfs = -4;
+  assert.ok(validateConfig(cfg).some((e) => /maxLevelDbfs/.test(e)));
+  cfg.audio.sweep.maxLevelDbfs = -65;
+  assert.ok(validateConfig(cfg).some((e) => /maxLevelDbfs/.test(e)));
+  cfg.audio.sweep.levelDbfs = -18;
+  cfg.audio.sweep.maxLevelDbfs = -30; // below levelDbfs
+  assert.ok(validateConfig(cfg).some((e) => /maxLevelDbfs/.test(e)));
+  cfg.audio.sweep.maxLevelDbfs = -6;
+  assert.deepEqual(validateConfig(cfg), []);
+});
+
+test('rejects audio.sweep.minSnrMarginDb / ambientCheckSeconds outside their sane ranges', () => {
+  const cfg = goodConfig();
+  cfg.audio.sweep.minSnrMarginDb = -5;
+  assert.ok(validateConfig(cfg).some((e) => /minSnrMarginDb/.test(e)));
+  cfg.audio.sweep.minSnrMarginDb = 20;
+  cfg.audio.sweep.ambientCheckSeconds = 0;
+  assert.ok(validateConfig(cfg).some((e) => /ambientCheckSeconds/.test(e)));
+  cfg.audio.sweep.ambientCheckSeconds = 1;
+  assert.deepEqual(validateConfig(cfg), []);
+});
+
 /* ---------------------------- validateRoomPatch -------------------------- */
 
 test('room patch accepts a known verify position', () => {

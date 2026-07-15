@@ -175,6 +175,30 @@ class LiveAudioIO {
     return extractChannels(raw, this._channelCount, this.cfg.referenceInputChannel, this.cfg.micInputChannel);
   }
 
+  /**
+   * Capture `seconds` of mic input WITHOUT writing any playback signal --
+   * used by the tune session's auto-SNR safety net to measure the ambient
+   * noise floor before a sweep. Same duplex stream, same channel
+   * extraction as playAndCapture(), just no write().
+   */
+  async captureAmbient(seconds) {
+    await this._readyPromise;
+    const nCaptureFrames = Math.floor(seconds * this.cfg.sampleRate);
+    const frameBytes = this._channelCount * BYTES_PER_SAMPLE;
+
+    const chunks = [];
+    let framesCaptured = 0;
+    const onData = (chunk) => { chunks.push(chunk); framesCaptured += Math.floor(chunk.length / frameBytes); };
+    this._stream.on('data', onData);
+
+    while (framesCaptured < nCaptureFrames) await sleep(20);
+    this._stream.removeListener('data', onData);
+
+    const raw = Buffer.concat(chunks);
+    const { mic } = extractChannels(raw, this._channelCount, this.cfg.referenceInputChannel, this.cfg.micInputChannel);
+    return { mic };
+  }
+
   close() {
     try { this._stream?.quit(() => {}); } catch { /* best effort */ }
   }
@@ -232,6 +256,17 @@ class MockAudioIO {
 
     await sleep(300); // pretend it took a moment
     return { ref, mic };
+  }
+
+  /** Mock ambient-noise probe: just the same mild noise floor term
+   *  playAndCapture() adds, with no sweep/room convolution -- a realistic
+   *  "quiet room" reading for the auto-SNR safety net's default path. */
+  async captureAmbient(seconds) {
+    const n = Math.floor(seconds * this.sr);
+    const mic = new Float64Array(n);
+    for (let i = 0; i < n; i++) mic[i] += (Math.random() - 0.5) * 1e-4;
+    await sleep(150);
+    return { mic };
   }
 
   /** Synthetic IR: distance delay + direct spike + a few reflections + tonal color. */

@@ -48,6 +48,16 @@ export function dbfsToSpl(dbfs, offsetDb) {
   return dbfs + (offsetDb ?? 0);
 }
 
+/**
+ * Inverse of dbfsToSpl: given a target dB SPL and the same calibrated
+ * offset, what dBFS achieves it? Lets the tune session compute a
+ * representative sweep level from the one-time loudness calibration
+ * instead of requiring a live SPL reading per sweep.
+ */
+export function splToDbfs(splDb, offsetDb) {
+  return splDb - (offsetDb ?? 0);
+}
+
 const round1 = (x) => Math.round(x * 10) / 10;
 
 /**
