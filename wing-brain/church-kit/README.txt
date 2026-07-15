@@ -103,8 +103,20 @@ NOTES
 -----
 - The Wing's IP is asked once and saved to wing-ip.txt in this folder.
   Delete that file to be asked again.
-- A full measurement tune (step 6) also needs the measurement mic and
-  a 2-input audio interface on THIS pc, plus sox installed. Without
-  those, step 6 still runs fine in mock mode for demo/training.
+- A full measurement tune (step 6) needs a REAL AUDIO BUILD, not just
+  "npm install" working. Live audio now uses naudiodon (ASIO support,
+  replacing an old sox/MME approach that had a confirmed 200-500ms fixed
+  buffering bug — see docs/DECISIONS.md). naudiodon compiles a native
+  addon from source and downloads the Steinberg ASIO SDK DURING install,
+  which needs, on the church PC, BEFORE running 0-FIRST-TIME-SETUP.bat:
+    * Visual Studio Build Tools with the "Desktop development with C++"
+      workload (free from visualstudio.microsoft.com/downloads — the
+      standalone "Build Tools", not full Visual Studio)
+    * Python (3.x — already required for node-gyp)
+    * Internet access (the ASIO SDK download step needs it)
+  If step 0's "npm install" fails on naudiodon specifically, that's this —
+  install the build tools above and re-run step 0. Without those tools,
+  step 6 still runs fine in MOCK mode for demo/training; only live
+  measurement needs the real ASIO build.
 - If any window flashes an error and closes too fast, run it again —
   every script ends with "press any key" so output should stay up.

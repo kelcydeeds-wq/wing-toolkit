@@ -1,16 +1,37 @@
 // io.js — audio playback/capture abstraction.
 //
-// LIVE mode: plays the sweep out the SoundGrid device and records two channels
-//   (reference loopback + measurement mic). Implemented by shelling out to sox
-//   for portability; swap for naudiodon/PortAudio if preferred once on the mini PC.
-//   >>> Must be verified against the SoundGrid ASIO device at the church session. <<<
+// LIVE mode: opens ONE full-duplex ASIO stream (naudiodon, built on
+// PortAudio) so playback and capture share a single audio clock/callback --
+// that shared clock is what actually makes "PC/interface latency cancels in
+// cross-correlation" true (see dsp/measure.js's findDelay()). A previous
+// implementation used sox with `-t waveaudio` (Windows MME) via two
+// independent play/record processes -- MME has well-documented large fixed
+// buffering (commonly 200-500ms) and, since it's two unrelated processes,
+// no shared-clock guarantee at all. That combination is what produced a
+// real 300-500ms "delay" reading at church that had nothing to do with
+// acoustics. See docs/DECISIONS.md for the full diagnosis.
 //
-// MOCK mode: simulates a small PA in a reverberant room so the full workflow can
-//   be developed and demoed without hardware. Different outputs get different
-//   delays, tilts, resonances and a sub with a room mode — enough realism that
-//   the analysis and recommendation code paths are genuinely exercised.
+// naudiodon is a native addon that must be BUILT FROM SOURCE with the
+// Steinberg ASIO SDK to get real ASIO support on Windows (the SDK can't be
+// legally redistributed as a prebuilt binary) -- `npm install` on the brain
+// box needs Visual Studio Build Tools (Desktop C++ workload), Python, and
+// internet access for the SDK download step. It is imported LAZILY here
+// (dynamic import inside LiveAudioIO, never at module load time) so mock
+// mode and the whole test suite work with zero dependency on it being
+// installed or buildable on any given machine -- only constructing a LIVE
+// AudioIO ever touches it.
+//
+// >>> TODO(church): config.audio.inputDevice/outputDevice currently hold
+//     the old MME-era device name ("IN 1-2 (BEHRINGER WING-USB)"). ASIO
+//     typically exposes a whole interface as ONE bidirectional device with
+//     a different name (often just "ASIO" + the interface name) -- these
+//     values are almost certainly wrong until confirmed live against
+//     naudiodon.getDevices() on the real console network. <<<
+//
+// MOCK mode: simulates a small PA in a reverberant room so the full workflow
+// can be developed and demoed without hardware. Unchanged by this rework --
+// it never touches real audio hardware, so none of the above applies to it.
 
-import { spawn } from 'node:child_process';
 import { fftConvolve } from '../dsp/measure.js';
 
 export function makeAudioIO(config) {
@@ -19,63 +40,144 @@ export function makeAudioIO(config) {
 
 /* ------------------------------- LIVE ---------------------------------- */
 
+const BYTES_PER_SAMPLE = 4; // Float32
+
+/**
+ * Pick the ASIO device whose name contains `nameHint` (case-insensitive).
+ * Throws with the list of every ASIO device actually seen if nothing
+ * matches -- fails loudly with a diagnosable message rather than silently
+ * opening the wrong interface. `devices` is whatever naudiodon.getDevices()
+ * returns (or an equivalent plain array in tests).
+ */
+export function findAsioDevice(devices, nameHint) {
+  const asioDevices = (devices || []).filter((d) => /asio/i.test(d.hostAPIName || ''));
+  const hint = String(nameHint || '').toLowerCase();
+  const match = asioDevices.find((d) => d.name.toLowerCase().includes(hint));
+  if (!match) {
+    const seen = asioDevices.length
+      ? asioDevices.map((d) => d.name).join(', ')
+      : '(no ASIO devices found at all -- is the ASIO driver installed and the interface powered on?)';
+    throw new Error(`No ASIO device matching "${nameHint}". ASIO devices seen: ${seen}`);
+  }
+  return match;
+}
+
+/** Interleave a mono Float64Array sweep into a stereo Float32 Buffer (both
+ *  channels carry the same signal -- there's no per-channel output config,
+ *  and the console's incoming USB tap is a stereo pair). */
+export function interleaveStereo(mono) {
+  const buf = Buffer.alloc(mono.length * 2 * BYTES_PER_SAMPLE);
+  for (let i = 0; i < mono.length; i++) {
+    const v = Math.fround(mono[i]);
+    buf.writeFloatLE(v, i * 2 * BYTES_PER_SAMPLE);
+    buf.writeFloatLE(v, i * 2 * BYTES_PER_SAMPLE + BYTES_PER_SAMPLE);
+  }
+  return buf;
+}
+
+/**
+ * De-interleave a captured raw Float32 buffer into the two channels
+ * (1-indexed) configured as reference/mic. Works for any channelCount >=
+ * max(refChannel, micChannel) -- the interface may expose far more input
+ * channels than the two we actually read, and PortAudio/naudiodon can only
+ * open "the first N channels" of a device, not an arbitrary offset, so the
+ * caller opens N = max(refChannel, micChannel) channels and this picks the
+ * two of interest out of that block.
+ */
+export function extractChannels(raw, channelCount, refChannel, micChannel) {
+  const frameBytes = channelCount * BYTES_PER_SAMPLE;
+  const n = frameBytes > 0 ? Math.floor(raw.length / frameBytes) : 0;
+  const ref = new Float64Array(n), mic = new Float64Array(n);
+  const refOffset = (refChannel - 1) * BYTES_PER_SAMPLE;
+  const micOffset = (micChannel - 1) * BYTES_PER_SAMPLE;
+  for (let i = 0; i < n; i++) {
+    const base = i * frameBytes;
+    ref[i] = raw.readFloatLE(base + refOffset);
+    mic[i] = raw.readFloatLE(base + micOffset);
+  }
+  return { ref, mic };
+}
+
 class LiveAudioIO {
   constructor(config) {
     this.cfg = config.audio;
+    this._stream = null;
+    this._channelCount = null;
+    this._readyPromise = this._open();
+    // Attach a handler immediately so a device-lookup failure at
+    // construction time (e.g. dev machine with no ASIO hardware) doesn't
+    // crash the process as an unhandled rejection before anything ever
+    // calls playAndCapture() (which awaits this same promise and surfaces
+    // the real error there, on the first actual measurement attempt).
+    this._readyPromise.catch((err) => console.error('[audio] live audio failed to initialize:', err.message));
+  }
+
+  async _open() {
+    let naudiodon;
+    try {
+      naudiodon = (await import('naudiodon')).default ?? await import('naudiodon');
+    } catch (err) {
+      throw new Error(
+        `naudiodon failed to load (${err.message}). Live audio needs it built from source with ` +
+        `ASIO support -- run "npm install" on a machine with Visual Studio Build Tools (Desktop ` +
+        `C++ workload), Python, and internet access (the ASIO SDK downloads during install). ` +
+        `See docs/DECISIONS.md for the full requirement.`
+      );
+    }
+    this._naudiodon = naudiodon;
+
+    const devices = naudiodon.getDevices();
+    let device;
+    try {
+      device = findAsioDevice(devices, this.cfg.inputDevice);
+    } catch {
+      device = findAsioDevice(devices, this.cfg.outputDevice); // let this one's error propagate if it also fails
+    }
+
+    this._channelCount = Math.max(this.cfg.referenceInputChannel, this.cfg.micInputChannel);
+    this._stream = new naudiodon.AudioIO({
+      inOptions: {
+        deviceId: device.id, channelCount: this._channelCount,
+        sampleFormat: naudiodon.SampleFormatFloat32, sampleRate: this.cfg.sampleRate,
+        closeOnError: false
+      },
+      outOptions: {
+        deviceId: device.id, channelCount: 2,
+        sampleFormat: naudiodon.SampleFormatFloat32, sampleRate: this.cfg.sampleRate,
+        closeOnError: false
+      }
+    });
+    this._stream.start();
+    return device;
   }
 
   /**
-   * Play `sweep` (Float64Array) on the configured output while capturing
-   * `captureSeconds` of 2-channel input. Returns { ref, mic } Float64Arrays.
-   * TODO(church): verify device names via `sox --help` / list-devices on the
-   * mini PC, confirm channel mapping for reference loopback vs. mic.
+   * Play `sweep` (mono) while capturing `captureSeconds` of input, through
+   * the ONE already-open full-duplex stream opened in _open() -- input and
+   * output share the same ASIO callback loop for the lifetime of this
+   * object, they are never reopened per call.
    */
   async playAndCapture(sweep, captureSeconds) {
-    const sr = this.cfg.sampleRate;
-    const playBuf = floatToWavBuffer(sweep, sr, 1);
+    await this._readyPromise;
+    const nCaptureFrames = Math.floor(captureSeconds * this.cfg.sampleRate);
+    const frameBytes = this._channelCount * BYTES_PER_SAMPLE;
 
-    const rec = spawn('sox', [
-      '-t', 'waveaudio', this.cfg.inputDevice,       // TODO(church): device string
-      '-t', 'raw', '-r', String(sr), '-e', 'float', '-b', '32', '-c', '2', '-',
-      'trim', '0', String(captureSeconds)
-    ]);
     const chunks = [];
-    rec.stdout.on('data', (d) => chunks.push(d));
+    let framesCaptured = 0;
+    const onData = (chunk) => { chunks.push(chunk); framesCaptured += Math.floor(chunk.length / frameBytes); };
+    this._stream.on('data', onData);
 
-    await playWav(playBuf, this.cfg.outputDevice);
-    await new Promise((res) => rec.on('close', res));
+    this._stream.write(interleaveStereo(sweep));
+    while (framesCaptured < nCaptureFrames) await sleep(20);
+    this._stream.removeListener('data', onData);
 
     const raw = Buffer.concat(chunks);
-    const n = Math.floor(raw.length / 8); // 2ch float32
-    const ref = new Float64Array(n), mic = new Float64Array(n);
-    for (let i = 0; i < n; i++) {
-      ref[i] = raw.readFloatLE(i * 8);
-      mic[i] = raw.readFloatLE(i * 8 + 4);
-    }
-    return { ref, mic };
+    return extractChannels(raw, this._channelCount, this.cfg.referenceInputChannel, this.cfg.micInputChannel);
   }
-}
 
-function playWav(buf, device) {
-  return new Promise((res, rej) => {
-    const p = spawn('sox', ['-t', 'wav', '-', '-t', 'waveaudio', device]);
-    p.on('close', (c) => (c === 0 ? res() : rej(new Error('sox play failed'))));
-    p.stdin.end(buf);
-  });
-}
-
-function floatToWavBuffer(x, sampleRate, channels) {
-  const data = Buffer.alloc(x.length * 4);
-  for (let i = 0; i < x.length; i++) data.writeFloatLE(x[i], i * 4);
-  const header = Buffer.alloc(44);
-  header.write('RIFF', 0); header.writeUInt32LE(36 + data.length, 4);
-  header.write('WAVE', 8); header.write('fmt ', 12);
-  header.writeUInt32LE(16, 16); header.writeUInt16LE(3, 20); // float
-  header.writeUInt16LE(channels, 22); header.writeUInt32LE(sampleRate, 24);
-  header.writeUInt32LE(sampleRate * channels * 4, 28);
-  header.writeUInt16LE(channels * 4, 32); header.writeUInt16LE(32, 34);
-  header.write('data', 36); header.writeUInt32LE(data.length, 40);
-  return Buffer.concat([header, data]);
+  close() {
+    try { this._stream?.quit(() => {}); } catch { /* best effort */ }
+  }
 }
 
 /* ------------------------------- MOCK ---------------------------------- */

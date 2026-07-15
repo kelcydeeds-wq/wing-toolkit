@@ -3,6 +3,86 @@
 Running log of judgment calls made during autonomous work runs, so they can be
 reviewed and reversed if wrong.
 
+## 2026-07-15 — live audio: sox/MME replaced with naudiodon/ASIO (root cause of the 300-500ms reading)
+
+Diagnosed entirely by reading code — no church visit needed for this part.
+`src/audio/io.js`'s LIVE implementation used sox with `-t waveaudio`, which
+is Windows MME, spawned as two INDEPENDENT processes (one play, one record).
+The file's own header comment claimed "SoundGrid ASIO device" as the design
+intent — the implementation never matched that intent. Two real bugs:
+
+- **MME has well-documented large fixed buffering** (commonly 200-500ms) —
+  matches the exact 300-500ms symptom from the 2026-07-14 visit precisely.
+  Because ref+mic were two channels of the SAME mme capture, this fixed
+  delay was equal on both channels and canceled correctly in
+  cross-correlation — which is exactly why relative timing (delay
+  differences between positions/outputs) came out sane while an absolute
+  offset got added to every reading, matching what was observed.
+- **`config.audio.referenceInputChannel`/`micInputChannel` were dead
+  config** — the old code hardcoded channel 0 = ref, channel 1 = mic from a
+  fixed `-c 2` capture, completely ignoring those two settings. They
+  happened to default to 1/2 (matching the hardcoded 0/1 zero-indexed
+  assumption), so this was latent, not yet symptomatic — but the Settings
+  UI exposes those fields as if they're honored, and they weren't.
+
+**Replaced with naudiodon** (PortAudio bindings), per explicit direction —
+one full-duplex `AudioIO` stream opened ONCE in `LiveAudioIO`'s constructor
+and reused for every `playAndCapture()` call, so input and output genuinely
+share one ASIO callback/clock for the object's whole lifetime, not two
+processes with no synchronization guarantee at all.
+- **`referenceInputChannel`/`micInputChannel` are now actually read** —
+  `extractChannels()` de-interleaves whichever two 1-indexed channels
+  config names out of an N-channel capture (N = max of the two configured
+  indices — PortAudio can only open "the first N channels" of a device, not
+  an arbitrary offset, so this opens enough channels to cover whichever is
+  higher and picks the two of interest out of that block).
+- **naudiodon is imported LAZILY** (dynamic `import()` inside
+  `LiveAudioIO._open()`, never at module load time) — it's a native addon
+  that must be built from source with the Steinberg ASIO SDK (confirmed via
+  research: the SDK can't be legally redistributed as a prebuilt binary, so
+  `npm install` downloads it and compiles during install). This machine has
+  no C++ build tools at all (`cl.exe`/vswhere not found) — genuinely cannot
+  install, build, or test this against real hardware here. The lazy import
+  means `MockAudioIO` and the entire test suite have zero dependency on
+  naudiodon being present; only actually constructing a LIVE `AudioIO`
+  touches it. Verified: `npm test` passes with naudiodon absent from
+  `node_modules` entirely.
+- **`package-lock.json` synced via `npm install --package-lock-only`**
+  (real registry metadata/integrity hash, `hasInstallScript: true`
+  confirmed) without attempting the actual native build — church-side
+  `npm install` will now correctly attempt the real build+ASIO-SDK-download
+  rather than working from a stale/mismatched lockfile.
+- **`config.audio.inputDevice`/`outputDevice` are flagged `TODO(church)`,
+  not silently guessed.** The confirmed value ("IN 1-2 (BEHRINGER
+  WING-USB)") is an MME-era name; ASIO typically exposes a whole interface
+  as one bidirectionally-named device, often under a different string
+  entirely. `findAsioDevice()` fails loudly (lists every ASIO device it
+  actually saw) rather than silently opening the wrong interface or
+  falling back to a guess.
+- **`scripts/list-audio-devices.mjs` (WinMM P/Invoke-based) cannot see ASIO
+  devices** — different Windows driver model entirely. Added a loud warning
+  to its output rather than rewriting it to depend on naudiodon (which
+  isn't installed on most dev machines) — the real ASIO device name has to
+  come from `naudiodon.getDevices()` on a machine where it's actually
+  built, i.e. the brain box, at church.
+- **Cross-correlation cancellation logic itself was NOT changed and is
+  architecturally sound** — confirmed on request. `findDelay()` (dsp/
+  measure.js) needs no manual "subtract the interface latency" step; it
+  relies entirely on ref and mic being two channels of one synchronized
+  capture (same hardware clock), so ANY shared/fixed latency — MME
+  buffering, ASIO buffer size, whatever — falls out of the cross-correlation
+  subtraction automatically, regardless of its magnitude. The naudiodon
+  rewrite doesn't change this principle, it just makes the "shared clock"
+  guarantee genuinely true (one duplex stream) instead of incidentally true
+  (two processes that happened to start close together).
+- **10 new tests** for the pure, hardware-independent helpers
+  (`findAsioDevice`, `interleaveStereo`, `extractChannels`) in
+  `test/audio-io.test.js`. `LiveAudioIO` itself (the real duplex stream) is
+  NOT unit-testable here for the same reason it can't be installed here —
+  it needs the repeat-measurement variance test (5 repeated measurements,
+  check consistency) at church, per explicit instruction, as the real
+  acceptance test once naudiodon is actually built there.
+
 ## 2026-07-15 — hard gate: low-confidence measurements can't reach an applied correction
 
 Prompted by a real result from the 2026-07-14 church visit: a 300-500ms

@@ -16,6 +16,7 @@
     "confirmed": false
   },
   "audio": {
+    "comment": "TODO(church): inputDevice/outputDevice are the OLD MME-era device name (confirmed 2026-07-14 for the sox/waveaudio implementation, since replaced -- see docs/DECISIONS.md). ASIO typically exposes a whole interface as ONE bidirectional device, often under a different name than its MME counterpart -- run naudiodon.getDevices() (or scripts/list-audio-devices.mjs, once updated) against the real console network and confirm the actual ASIO device name before trusting these values live. referenceInputChannel/micInputChannel (1/2) match MEASUREMENT_RIG.md's confirmed USB1=reference/USB2=mic taps and are honored by the code (src/audio/io.js), not just documentation.",
     "sampleRate": 48000,
     "inputDevice": "IN 1-2 (BEHRINGER WING-USB)",
     "outputDevice": "OUT 1-2 (BEHRINGER WING-USB)",
