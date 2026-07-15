@@ -388,6 +388,7 @@ export function validatePositionsArray(positions, room) {
       bad(`${at}.z: must be a number 0-${MAX_Z_M} (meters)`);
     }
     if (!isNum(p?.weight) || p.weight < 0) bad(`${at}.weight: must be a number >= 0`);
+    if (p?.enabled !== undefined && typeof p.enabled !== 'boolean') bad(`${at}.enabled: must be a boolean`);
   });
   return errors;
 }

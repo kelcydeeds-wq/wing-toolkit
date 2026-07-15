@@ -294,6 +294,33 @@ test('preflightCheck refuses to run while a session is already in progress', asy
   await assert.rejects(() => session.preflightCheck(), /cannot pre-flight while a session is running/);
 });
 
+/* -------------------- room.positions[].enabled -------------------- */
+// Mirrors activePhysicalOutputs()'s enabled !== false pattern -- a disabled
+// position must be skipped entirely by start(), not just excluded later.
+
+test('start() skips a disabled position in full mode', async () => {
+  const audio = { playAndCapture: async () => cleanCapture(20) };
+  const disabledRoom = {
+    ...room,
+    positions: room.positions.map((p) => (p.id === 'p2' ? { ...p, enabled: false } : p))
+  };
+  const session = newSession({ config: oneOutputConfig(), room: disabledRoom, audio, wing: fakeWing(), emit: () => {} });
+
+  session.start('full');
+
+  assert.ok(!session.positions.some((p) => p.id === 'p2'), 'disabled position should be excluded from the walk');
+  assert.equal(session.positions.length, disabledRoom.positions.length - 1);
+});
+
+test('start() treats a position with no enabled field as enabled (undefined defaults true)', async () => {
+  const audio = { playAndCapture: async () => cleanCapture(20) };
+  const session = newSession({ config: oneOutputConfig(), room, audio, wing: fakeWing(), emit: () => {} });
+
+  session.start('full');
+
+  assert.equal(session.positions.length, room.positions.length, 'no positions have enabled set, so none should be filtered');
+});
+
 /* -------------------- low-confidence exclusion from correction -------------------- */
 // A 300-500ms "delay" is not physically plausible for a real room -- it's the
 // signature of findDelay() locking onto noise instead of a real correlation

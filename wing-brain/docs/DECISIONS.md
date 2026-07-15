@@ -3,6 +3,78 @@
 Running log of judgment calls made during autonomous work runs, so they can be
 reviewed and reversed if wrong.
 
+## 2026-07-15 — visual speaker/output editor, Stage 2: interactive canvas
+
+Stage 2 of the 5-stage feature: made the room map on the Settings page's
+Room card draggable (speaker/position icons) plus a tap-to-toggle
+enabled/disabled overlay. Backend calls only the Stage 1 endpoints
+(`PUT /api/speakers/:id`, `PUT /api/positions/:id`, `PUT /api/outputs/:id`)
+directly with `fetch()`, never the generic `/api/config` `saveConfig()` path.
+Stages 3-4 (add/remove, full settings panels) are still separate follow-up.
+
+- **`room.positions[].enabled` is a new field**, mirroring
+  `physicalOutputs[].enabled` exactly (`undefined`/`null` = enabled, only
+  `=== false` means disabled). It closes a real gap: `weight` already
+  existed but means "measured, excluded from the EQ spatial average," not
+  "skip measuring this position" — confirmed by reading
+  `src/tune/session.js`'s `buildRecommendations()`/`spatialAverage` usage,
+  which is a different concern from `start()`'s position walk. Added a
+  single `.filter((p) => p.enabled !== false)` in `start()` right after the
+  existing mode-based position selection (applies to both `'full'` and
+  `'verify'` — if the one `'verify'` position is itself disabled that's a
+  pre-existing edge case, not specially handled here) and a matching
+  optional-boolean check in `validatePositionsArray`
+  (`src/config/settings.js`). Two new tests in `test/session.test.js` cover
+  the filter and the "no field present = enabled" default.
+- **Speaker enabled state is derived, not stored on the speaker.** A speaker
+  has no `enabled` field of its own — its on/off state is really its
+  physicalOutput's `enabled`, found via a new `findOutputForSpeaker()`
+  helper in `public/index.html` that checks both `physicalOutput.speakerId`
+  and `physicalOutput.sharedDrivers.drivers[].speakerId` (a shared-driver
+  output like the side fills has two speaker icons that both resolve to the
+  SAME one physicalOutput — toggling either one's overlay toggles that
+  shared output for both). A speaker with no physicalOutput referencing it
+  yet draws no toggle at all (nothing to flip) rather than a fake
+  always-off state.
+- **Canvas-drawn toggle glyphs, not DOM-overlay checkboxes.** Considered an
+  absolutely-positioned `<input type="checkbox">` per icon so real
+  touch-target semantics come for free, but rejected it: it would need to
+  track the same X()/Y() projection as the canvas on every resize/redraw
+  (two coordinate systems to keep in sync instead of one), and canvas
+  already redraws wholesale on every drag frame and every websocket
+  broadcast anyway. A canvas-drawn 12x12px square with an 11px hit-test
+  radius (~22px touch target) checked in the same pointerdown handler as
+  the drag hit-test keeps everything in one coordinate space and one event
+  path.
+- **Pointer Events, not separate mouse/touch listeners.** `pointerdown`/
+  `pointermove`/`pointerup`/`pointercancel` with `setPointerCapture` unify
+  mouse, touch, and pen into one stream and avoid the classic double-firing
+  (`mousedown` + synthesized `touchstart`) headache. `touch-action:none` in
+  CSS on `#roomMapEdit` plus `e.preventDefault()` on the handlers stops the
+  page from scrolling under a drag on a phone. This app's target browsers
+  (recent mobile Safari/Chrome) all support Pointer Events, so the
+  fallback-listener complexity the task flagged as a fallback option wasn't
+  needed.
+- **Refactored `drawRoom()`'s coordinate math into `roomProjection(room,
+  cv)`** (returns `{X, Y, invX, invY, ...}`) and the wall/stage/balcony/
+  booth drawing into `drawRoomStatic()`, both shared by the unchanged
+  read-only `drawRoom()` (home page `#roomMap`, in-session `#roomMap2` —
+  deliberately left non-interactive, mid-measurement is not editing) and
+  the new `drawRoomInteractive()` for the Settings page's `#roomMapEdit`.
+  No drawing logic was duplicated.
+- **Drag commit is optimistic locally, authoritative via broadcast.**
+  During a drag, `drawRoomInteractive()` redraws immediately every
+  `pointermove` for responsiveness. On release, `commitRoomDrag()` clamps
+  to the wall bbox client-side (a duplicate of `isWithinRoomBounds()`'s ~4
+  lines of math, server stays the real authority and 400s anything this
+  client clamp doesn't catch) and PUTs the full speaker/position object. On
+  success, no local re-render is forced — the server's `'config'`/`'room'`
+  websocket broadcasts (received by every open tab, including the one that
+  dragged) are the only redraw trigger, so the optimistic in-drag frame
+  never fights the authoritative one. On a validation error, the client
+  re-fetches `/api/config` and re-renders so a rejected position never
+  stays shown as if it saved.
+
 ## 2026-07-15 — visual speaker/output editor, Stage 1: backend persistence
 
 Stage 1 of a 5-stage feature (replacing the static config-driven output setup

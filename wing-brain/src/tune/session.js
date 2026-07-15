@@ -208,6 +208,10 @@ export class TuneSession {
     this.positions = mode === 'verify'
       ? this.room.positions.filter((p) => p.id === this.room.verifyPosition)
       : [...this.room.positions];
+    // Skip positions the operator has disabled (e.g. a spot that's
+    // temporarily unreachable/irrelevant) -- mirrors activePhysicalOutputs()'s
+    // `enabled !== false` pattern so undefined/missing still means enabled.
+    this.positions = this.positions.filter((p) => p.enabled !== false);
     this.posIndex = 0;
     this.state = 'waiting_position';
     this.emit('session', this.snapshot());

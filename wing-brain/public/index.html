@@ -44,7 +44,8 @@
   .row{display:flex; gap:10px}
   .row>button{flex:1}
 
-  #roomMap,#roomMap2{width:100%; border-radius:10px; background:var(--panel2); display:block}
+  #roomMap,#roomMap2,#roomMapEdit{width:100%; border-radius:10px; background:var(--panel2); display:block}
+  #roomMapEdit{touch-action:none}
   .poslist{margin:10px 0 0; padding:0; list-style:none}
   .poslist li{display:flex; justify-content:space-between; padding:7px 2px;
     border-bottom:1px dashed var(--line); color:var(--dim); font-size:14px}
@@ -606,21 +607,33 @@ function renderVerify(){
 
 /* ---------- drawing ---------- */
 
-function drawRoom(cv, highlightId){
-  if (!room || !cv) return;
-  const ctx = cv.getContext('2d');
+/**
+ * World meters <-> canvas pixels for a room, from room.walls' bounding box
+ * (falls back to a width/depth rectangle) — shared by the read-only
+ * drawRoom() and the interactive Settings-page editor so the projection
+ * math (and its inverse, for drag release) never drifts out of sync.
+ * Mirrors roomBounds()'s bbox math in src/config/settings.js.
+ */
+function roomProjection(rm, cv){
   const W = cv.width, H = cv.height, PAD = 14;
-  ctx.clearRect(0,0,W,H);
-
-  // World bounds from walls polygon (falls back to width/depth rectangle)
-  const pts = room.walls || [[0,0],[room.width,0],[room.width,room.depth],[0,room.depth]];
+  const pts = rm.walls || [[0,0],[rm.width,0],[rm.width,rm.depth],[0,rm.depth]];
   const xs = pts.map(p=>p[0]), ys = pts.map(p=>p[1]);
   const minX = Math.min(...xs), maxX = Math.max(...xs);
   const minY = Math.min(...ys), maxY = Math.max(...ys);
   const s = Math.min((W-2*PAD)/(maxX-minX), (H-2*PAD)/(maxY-minY));
-  const X = (x)=>PAD+(x-minX)*s, Y=(y)=>PAD+(y-minY)*s;
+  return {
+    pts, minX, maxX, minY, maxY, s, PAD,
+    X: (x)=>PAD+(x-minX)*s, Y: (y)=>PAD+(y-minY)*s,
+    invX: (px)=>minX+(px-PAD)/s, invY: (py)=>minY+(py-PAD)/s
+  };
+}
 
-  // Walls
+/** Walls/stage/balcony/booth — the static backdrop shared by every room
+ *  canvas (read-only home map, in-session map, interactive Settings editor). */
+function drawRoomStatic(ctx, cv, rm, proj){
+  const { X, Y, pts, s } = proj;
+  ctx.clearRect(0,0,cv.width,cv.height);
+
   ctx.beginPath();
   pts.forEach((p,i)=> i?ctx.lineTo(X(p[0]),Y(p[1])):ctx.moveTo(X(p[0]),Y(p[1])));
   ctx.closePath();
@@ -629,17 +642,15 @@ function drawRoom(cv, highlightId){
 
   ctx.font = '11px ui-monospace';
 
-  // Stage
-  if (room.stage) {
-    const g = room.stage;
+  if (rm.stage) {
+    const g = rm.stage;
     ctx.fillStyle = '#22262d';
     ctx.fillRect(X(g.x), Y(g.y), g.w*s, g.h*s);
     ctx.fillStyle = '#8b919a';
     ctx.fillText('STAGE', X(g.x)+8, Y(g.y)+16);
   }
-  // Balcony footprint
-  if (room.balcony) {
-    const b = room.balcony;
+  if (rm.balcony) {
+    const b = rm.balcony;
     ctx.fillStyle = 'rgba(255,180,84,0.08)';
     ctx.fillRect(X(b.x), Y(b.y), b.w*s, b.h*s);
     ctx.strokeStyle = 'rgba(255,180,84,0.5)'; ctx.setLineDash([6,4]);
@@ -648,14 +659,22 @@ function drawRoom(cv, highlightId){
     ctx.fillStyle = 'rgba(255,180,84,0.7)';
     ctx.fillText('BALCONY (above)', X(b.x)+6, Y(b.y)+14);
   }
-  // Booth
-  if (room.booth) {
-    const b = room.booth;
+  if (rm.booth) {
+    const b = rm.booth;
     ctx.strokeStyle = '#3a4048';
     ctx.strokeRect(X(b.x), Y(b.y), b.w*s, b.h*s);
     ctx.fillStyle = '#5a616b';
     ctx.fillText('FOH', X(b.x)+4, Y(b.y)-4);
   }
+}
+
+function drawRoom(cv, highlightId){
+  if (!room || !cv) return;
+  const ctx = cv.getContext('2d');
+  const proj = roomProjection(room, cv);
+  const { X, Y } = proj;
+  drawRoomStatic(ctx, cv, room, proj);
+
   // Speakers
   for (const sp of room.speakers || []) {
     const x = X(sp.x), y = Y(sp.y);
@@ -679,9 +698,224 @@ function drawRoom(cv, highlightId){
     if (Math.abs(p.x - room.width / 2) < 0.3) {
       ctx.fillText(p.label, x - tw/2, y + (isHi ? 34 : 22)); // on-center: label centered below dot
     } else {
-      ctx.fillText(p.label, x+16+tw > W-6 ? x-16-tw : x+16, y+4); // side: flip at right edge
+      ctx.fillText(p.label, x+16+tw > cv.width-6 ? x-16-tw : x+16, y+4); // side: flip at right edge
     }
   }
+}
+
+/* ---------- interactive room editor (Settings page, Stage 2) ---------- */
+// Draggable speaker/position icons + a tap-to-toggle enabled overlay. Reuses
+// roomProjection()/drawRoomStatic() above -- only the marker layer differs
+// from the read-only drawRoom(). Pointer Events (not separate mouse/touch
+// listeners) because they unify mouse+touch+pen into one event stream with
+// setPointerCapture, and every browser this app targets (recent mobile
+// Safari/Chrome) supports them -- see docs/DECISIONS.md.
+
+let roomEditDrag = null;             // { kind, id, curX, curY, pointerId } world coords, mid-drag
+let roomEditHitTargets = [];         // [{kind,id,cx,cy,r}] rebuilt every draw, canvas-space px
+let roomEditToggleTargets = [];      // [{kind,id,output?,cx,cy}] same
+
+/** A speaker's on/off state lives on whichever physicalOutput references it
+ *  (directly via speakerId, or via a shared-driver's drivers[].speakerId --
+ *  both driver icons of a shared output resolve to that SAME output). Null
+ *  if no output references this speaker yet (no toggle drawn for it). */
+function findOutputForSpeaker(speakerId, physicalOutputs){
+  for (const o of physicalOutputs || []) {
+    if (o.speakerId === speakerId) return o;
+    if (o.sharedDrivers?.drivers?.some((d) => d.speakerId === speakerId)) return o;
+  }
+  return null;
+}
+
+function drawToggleGlyph(ctx, cx, cy, enabled){
+  ctx.fillStyle = '#0c0e10';
+  ctx.strokeStyle = enabled ? '#5dd39e' : '#8b919a';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.rect(cx-6, cy-6, 12, 12); ctx.fill(); ctx.stroke();
+  if (enabled) {
+    ctx.strokeStyle = '#5dd39e'; ctx.lineWidth = 1.7;
+    ctx.beginPath(); ctx.moveTo(cx-3, cy); ctx.lineTo(cx-1, cy+3); ctx.lineTo(cx+4, cy-3); ctx.stroke();
+  }
+}
+
+function drawRoomInteractive(cv){
+  const R = appConfig?.room, C = appConfig?.config;
+  if (!R || !C || !cv) return;
+  const ctx = cv.getContext('2d');
+  const proj = roomProjection(R, cv);
+  const { X, Y } = proj;
+  drawRoomStatic(ctx, cv, R, proj);
+
+  roomEditHitTargets = [];
+  roomEditToggleTargets = [];
+
+  for (const sp of R.speakers || []) {
+    const dragging = roomEditDrag && roomEditDrag.kind === 'speaker' && roomEditDrag.id === sp.id;
+    const wx = dragging ? roomEditDrag.curX : sp.x, wy = dragging ? roomEditDrag.curY : sp.y;
+    const x = X(wx), y = Y(wy);
+    const out = findOutputForSpeaker(sp.id, C.physicalOutputs);
+    const enabled = out ? out.enabled !== false : true;
+
+    ctx.globalAlpha = enabled ? 1 : 0.35;
+    ctx.fillStyle = sp.id.startsWith('fill') ? '#6ab7ff' : '#ff6b5e';
+    ctx.beginPath();
+    ctx.moveTo(x, y-7); ctx.lineTo(x+7, y+6); ctx.lineTo(x-7, y+6);
+    ctx.closePath(); ctx.fill();
+    ctx.globalAlpha = 1;
+
+    roomEditHitTargets.push({ kind: 'speaker', id: sp.id, cx: x, cy: y, r: 14 });
+    if (out) {
+      const tx = x+13, ty = y-13;
+      drawToggleGlyph(ctx, tx, ty, enabled);
+      roomEditToggleTargets.push({ kind: 'speaker', id: sp.id, output: out, cx: tx, cy: ty });
+    }
+  }
+
+  for (const p of R.positions || []) {
+    const dragging = roomEditDrag && roomEditDrag.kind === 'position' && roomEditDrag.id === p.id;
+    const wx = dragging ? roomEditDrag.curX : p.x, wy = dragging ? roomEditDrag.curY : p.y;
+    const x = X(wx), y = Y(wy);
+    const enabled = p.enabled !== false;
+
+    ctx.globalAlpha = enabled ? 1 : 0.35;
+    ctx.beginPath();
+    ctx.arc(x, y, 8, 0, Math.PI*2);
+    ctx.fillStyle = p.zone==='balcony' ? '#7a6a4a' : p.zone==='under_balcony' ? '#4a5568' : '#3a4048';
+    ctx.fill();
+    ctx.fillStyle = '#8b919a';
+    ctx.font = '11px ui-monospace';
+    const tw = ctx.measureText(p.label).width;
+    ctx.fillText(p.label, x+16+tw > cv.width-6 ? x-16-tw : x+16, y+4);
+    ctx.globalAlpha = 1;
+
+    roomEditHitTargets.push({ kind: 'position', id: p.id, cx: x, cy: y, r: 15 });
+    const tx = x+15, ty = y-15;
+    drawToggleGlyph(ctx, tx, ty, enabled);
+    roomEditToggleTargets.push({ kind: 'position', id: p.id, cx: tx, cy: ty });
+  }
+}
+
+/** Canvas-internal-pixel coords from a PointerEvent, correcting for the
+ *  canvas being CSS-scaled (width:100%) away from its width/height attrs --
+ *  needed for both mouse and touch since rect.width != cv.width on any
+ *  phone screen narrower than 560px. */
+function canvasPointFromEvent(cv, e){
+  const rect = cv.getBoundingClientRect();
+  const scaleX = cv.width / rect.width, scaleY = cv.height / rect.height;
+  return { x: (e.clientX - rect.left) * scaleX, y: (e.clientY - rect.top) * scaleY };
+}
+
+/** Client-side mirror of isWithinRoomBounds()/roomBounds() in
+ *  src/config/settings.js -- smooth-drag clamping only, server validation
+ *  stays the actual authority and will reject anything this misses. */
+function clampToRoomBounds(x, y, rm){
+  const walls = rm?.walls;
+  if (!Array.isArray(walls) || !walls.length) return { x, y };
+  const xs = walls.map((p) => p[0]), ys = walls.map((p) => p[1]);
+  const minX = Math.min(...xs), maxX = Math.max(...xs);
+  const minY = Math.min(...ys), maxY = Math.max(...ys);
+  return { x: Math.min(maxX, Math.max(minX, x)), y: Math.min(maxY, Math.max(minY, y)) };
+}
+
+/** Drag released: PUT the full speaker/position object (dedicated Stage 1
+ *  endpoints replace the whole entry, no partial merge) with x/y updated.
+ *  On failure, re-fetch the authoritative config so the icon snaps back
+ *  instead of showing a position that never actually saved. */
+async function commitRoomDrag(kind, id, x, y){
+  const R = appConfig.room;
+  const orig = kind === 'speaker' ? R.speakers.find((s) => s.id === id) : R.positions.find((p) => p.id === id);
+  if (!orig) return;
+  const { x: cx, y: cy } = clampToRoomBounds(x, y, R);
+  if (cx === orig.x && cy === orig.y) return; // tap without an actual move -- nothing to save
+  const url = `/api/${kind === 'speaker' ? 'speakers' : 'positions'}/${encodeURIComponent(id)}`;
+  try {
+    const res = await fetch(url, {
+      method: 'PUT', headers: {'content-type':'application/json'}, body: JSON.stringify({ ...orig, x: cx, y: cy })
+    });
+    const body = await res.json();
+    if (!res.ok) {
+      showToast(body.errors ? body.errors.join(' · ') : (body.error || `HTTP ${res.status}`), 'warn');
+      try { appConfig = await (await fetch('/api/config')).json(); } catch { /* keep stale appConfig, next broadcast will fix it */ }
+      if (settingsOpen) renderSettings();
+    }
+    // On success, the server's 'config'/'room' broadcasts (received by every
+    // open tab, including this one) are the sole redraw trigger -- no local
+    // optimistic update here, so we never fight the broadcast.
+  } catch (err) {
+    showToast(String(err), 'warn');
+  }
+}
+
+/** Tapped a toggle glyph: PUT the referenced speaker output (or the
+ *  position itself) with `enabled` flipped. Single tap, no confirm modal. */
+async function toggleRoomEnabled(target){
+  try {
+    if (target.kind === 'speaker') {
+      const out = target.output;
+      const res = await fetch(`/api/outputs/${encodeURIComponent(out.id)}`, {
+        method: 'PUT', headers: {'content-type':'application/json'},
+        body: JSON.stringify({ ...out, enabled: out.enabled === false })
+      });
+      const body = await res.json();
+      if (!res.ok) showToast(body.errors ? body.errors.join(' · ') : (body.error || `HTTP ${res.status}`), 'warn');
+    } else {
+      const p = appConfig.room.positions.find((x) => x.id === target.id);
+      if (!p) return;
+      const res = await fetch(`/api/positions/${encodeURIComponent(p.id)}`, {
+        method: 'PUT', headers: {'content-type':'application/json'},
+        body: JSON.stringify({ ...p, enabled: p.enabled === false })
+      });
+      const body = await res.json();
+      if (!res.ok) showToast(body.errors ? body.errors.join(' · ') : (body.error || `HTTP ${res.status}`), 'warn');
+    }
+  } catch (err) { showToast(String(err), 'warn'); }
+}
+
+/** Wire pointer events on the Settings page's interactive room canvas. Called
+ *  fresh on every renderSettings() since the canvas node itself is rebuilt
+ *  each time (innerHTML replace). */
+function wireRoomEditor(cv){
+  roomEditDrag = null;
+  const hitRadius = (t) => t.r ?? 14;
+
+  cv.addEventListener('pointerdown', (e) => {
+    const pt = canvasPointFromEvent(cv, e);
+    const toggle = roomEditToggleTargets.find((t) => Math.hypot(t.cx-pt.x, t.cy-pt.y) <= 11);
+    if (toggle) {
+      e.preventDefault();
+      toggleRoomEnabled(toggle);
+      return;
+    }
+    const hit = roomEditHitTargets.find((t) => Math.hypot(t.cx-pt.x, t.cy-pt.y) <= hitRadius(t));
+    if (!hit) return;
+    e.preventDefault();
+    cv.setPointerCapture(e.pointerId);
+    const entity = hit.kind === 'speaker'
+      ? appConfig.room.speakers.find((s) => s.id === hit.id)
+      : appConfig.room.positions.find((p) => p.id === hit.id);
+    if (!entity) return;
+    roomEditDrag = { kind: hit.kind, id: hit.id, curX: entity.x, curY: entity.y, pointerId: e.pointerId };
+    drawRoomInteractive(cv);
+  });
+
+  cv.addEventListener('pointermove', (e) => {
+    if (!roomEditDrag || roomEditDrag.pointerId !== e.pointerId) return;
+    e.preventDefault();
+    const proj = roomProjection(appConfig.room, cv);
+    const pt = canvasPointFromEvent(cv, e);
+    roomEditDrag.curX = proj.invX(pt.x);
+    roomEditDrag.curY = proj.invY(pt.y);
+    drawRoomInteractive(cv); // local optimistic redraw during the drag only
+  });
+
+  const endDrag = (e) => {
+    if (!roomEditDrag || roomEditDrag.pointerId !== e.pointerId) return;
+    const { kind, id, curX, curY } = roomEditDrag;
+    roomEditDrag = null;
+    commitRoomDrag(kind, id, curX, curY);
+  };
+  cv.addEventListener('pointerup', endDrag);
+  cv.addEventListener('pointercancel', endDrag);
 }
 
 function renderPosList(){
@@ -1012,10 +1246,12 @@ function renderSettings(){
 
     <div class="card">
       <h2>Room</h2>
+      <canvas id="roomMapEdit" width="560" height="380"></canvas>
+      <p class="hint">Drag a speaker (triangle) or measurement position (circle) to reposition it — saves on release. Tap the small checkbox next to an icon to enable/disable it (dimmed = disabled). Disabled positions are skipped during Full Tune; disabled speakers' outputs are skipped everywhere.</p>
       ${frow('Verify position', `<select id="set_verify_pos">${R.positions.map((p) =>
         `<option value="${esc(p.id)}" ${p.id === R.verifyPosition ? 'selected' : ''}>${esc(p.label)}</option>`).join('')}</select>`)}
       <p class="hint">${esc(R.name)} · ${R.width} m wide · ${R.positions.length} positions · ${(R.speakers || []).length} speakers</p>
-      <p class="hint">Room geometry edits still happen in config/room.json for now — positions drive delay predictions, so they change with a tape measure, not a form.</p>
+      <p class="hint">Adding/removing speakers or positions, and full geometry edits, are still config/room.json-only for now (a later stage adds that UI).</p>
       <div class="cardfoot"><button class="small" id="save_room" disabled>Save</button></div>
     </div>
 
@@ -1052,6 +1288,7 @@ function renderSettings(){
     $('curveHint').textContent = curves.find((c) => c.name === $('set_curve').value)?.comment || '';
   });
   $('set_verify_pos').addEventListener('change', () => markDirty('room'));
+  { const roomEditCv = $('roomMapEdit'); if (roomEditCv) { wireRoomEditor(roomEditCv); drawRoomInteractive(roomEditCv); } }
   $('set_rawjson').addEventListener('input', () => markDirty('raw'));
   wire('loudness', ['lm_enabled', 'lm_pos', 'lm_target', 'lm_soft', 'lm_hard', 'lm_sustained', 'lm_window', 'lm_quiet_on', 'lm_quiet']);
   $('lm_pos').addEventListener('change', () => markDirty('loudness'));
