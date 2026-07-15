@@ -3,6 +3,47 @@
 Running log of judgment calls made during autonomous work runs, so they can be
 reviewed and reversed if wrong.
 
+## 2026-07-15 — visual speaker/output editor, Stage 4: per-icon settings panel
+
+Stage 4 of the 5-stage feature: a gear glyph on every speaker/position icon
+on the Settings page's interactive Room map, opening an inline settings
+panel (same visual pattern as Stage 3's `#roomAddPanel`) with a full field
+set + delete, writing through Stage 1's `PUT`/`DELETE` endpoints.
+
+- **The "sources" multi-select maps to `speakerId` vs `sharedDrivers` by
+  count, not by an explicit toggle.** Exactly 1 checked speaker → write
+  `physicalOutput.speakerId` and delete the `sharedDrivers` key; 2+ checked →
+  write `physicalOutput.sharedDrivers = {count, drivers}` and delete
+  `speakerId`. Since `PUT` is a full-object upsert with no server-side merge
+  (`server.js`'s `{ ...(req.body||{}), id }`), simply omitting a key from the
+  client-built next-object is sufficient — no explicit "delete" call needed.
+  Verified round-trip both directions live against the mock server
+  (`center_fill_out` 1→2→1, `side_fills_out` 2→1→2), confirming
+  `validateConfig` accepts both shapes and the unused key actually
+  disappears from the persisted JSON, not just goes `null`.
+- **Driver labels for newly-added shared sources are auto-generated** by
+  title-casing the speaker id (`fill_l` → `Fill L`) rather than prompting per
+  driver — keeps the panel to one flow. Existing drivers keep their existing
+  label (looked up by speakerId in the previous `sharedDrivers.drivers`) so
+  re-saving with no source changes never silently renames anything.
+- **Cascade-delete confirm needed three outcomes, not two, so it isn't
+  literally "one confirm dialog."** The spec asks for a single dialog
+  listing what's orphaned, where declining the cascade still deletes the
+  output (only the bus/speaker survive) — but a native `confirm()` only has
+  OK/Cancel. Implemented as: dialog 1 lists everything that will go (output +
+  orphaned bus + orphaned speaker ids) — OK cascades all of it; Cancel opens
+  dialog 2 ("delete ONLY the output, keep the rest?") — OK deletes just the
+  output, Cancel aborts the whole delete with nothing removed. No dialog
+  appears at all when nothing would be orphaned (other outputs still
+  reference the bus/speaker) — just a plain single confirm-then-delete.
+- **Gear-panel edits aren't wired into the existing `dirtyCards`/`markDirty`
+  staleness guard** (`onConfig()` in `public/index.html`) the way the table
+  cards are — a same-tab broadcast while the panel is open (e.g. another
+  browser tab saving something else) will re-render the panel from fresh
+  server state and drop unsaved in-panel edits. Same risk profile as the
+  drag-to-reposition flow already accepts; not fixed here, flagged for a
+  later pass if it proves annoying in practice.
+
 ## 2026-07-15 — visual speaker/output editor, Stage 3: add mode
 
 Stage 3 of the 5-stage feature: a "+ Add" control on the Settings page's

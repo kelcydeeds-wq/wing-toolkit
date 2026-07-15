@@ -714,11 +714,17 @@ function drawRoom(cv, highlightId){
 let roomEditDrag = null;             // { kind, id, curX, curY, pointerId } world coords, mid-drag
 let roomEditHitTargets = [];         // [{kind,id,cx,cy,r}] rebuilt every draw, canvas-space px
 let roomEditToggleTargets = [];      // [{kind,id,output?,cx,cy}] same
+let roomEditGearTargets = [];        // [{kind,id,cx,cy}] same -- Stage 4 settings-panel glyph
 
 // Add-mode state (Stage 3), null when inactive. { kind: null } = "+" tapped,
 // choosing speaker/position. { kind, placed:false } = type chosen, waiting
 // for a map tap. { kind, placed:true, x, y } = tapped, form showing.
 let roomAddMode = null;
+
+// Gear-panel state (Stage 4), null when no panel is open. { kind, id } --
+// tapping a different icon's gear just swaps these fields (see
+// openRoomGearPanel()) rather than stacking a second panel.
+let roomGearPanel = null;
 
 /** A speaker's on/off state lives on whichever physicalOutput references it
  *  (directly via speakerId, or via a shared-driver's drivers[].speakerId --
@@ -743,6 +749,23 @@ function drawToggleGlyph(ctx, cx, cy, enabled){
   }
 }
 
+/** Small gear glyph (Stage 4) -- opens the settings panel for the icon it's
+ *  attached to. Same visual language as drawToggleGlyph (dark chip, thin
+ *  stroke) so the two overlay glyphs read as a matched pair. */
+function drawGearGlyph(ctx, cx, cy, active){
+  ctx.fillStyle = '#0c0e10';
+  ctx.strokeStyle = active ? '#ffb454' : '#8b919a';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.arc(cx, cy, 7, 0, Math.PI*2); ctx.fill(); ctx.stroke();
+  ctx.beginPath(); ctx.arc(cx, cy, 2.6, 0, Math.PI*2); ctx.stroke();
+  for (let i = 0; i < 6; i++) {
+    const a = (i / 6) * Math.PI * 2;
+    const x1 = cx + Math.cos(a) * 5, y1 = cy + Math.sin(a) * 5;
+    const x2 = cx + Math.cos(a) * 7.5, y2 = cy + Math.sin(a) * 7.5;
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+  }
+}
+
 function drawRoomInteractive(cv){
   const R = appConfig?.room, C = appConfig?.config;
   if (!R || !C || !cv) return;
@@ -753,6 +776,7 @@ function drawRoomInteractive(cv){
 
   roomEditHitTargets = [];
   roomEditToggleTargets = [];
+  roomEditGearTargets = [];
 
   for (const sp of R.speakers || []) {
     const dragging = roomEditDrag && roomEditDrag.kind === 'speaker' && roomEditDrag.id === sp.id;
@@ -774,6 +798,10 @@ function drawRoomInteractive(cv){
       drawToggleGlyph(ctx, tx, ty, enabled);
       roomEditToggleTargets.push({ kind: 'speaker', id: sp.id, output: out, cx: tx, cy: ty });
     }
+    const gx = x-13, gy = y-13;
+    const gearActive = roomGearPanel?.kind === 'speaker' && roomGearPanel.id === sp.id;
+    drawGearGlyph(ctx, gx, gy, gearActive);
+    roomEditGearTargets.push({ kind: 'speaker', id: sp.id, cx: gx, cy: gy });
   }
 
   for (const p of R.positions || []) {
@@ -797,6 +825,10 @@ function drawRoomInteractive(cv){
     const tx = x+15, ty = y-15;
     drawToggleGlyph(ctx, tx, ty, enabled);
     roomEditToggleTargets.push({ kind: 'position', id: p.id, cx: tx, cy: ty });
+    const gx = x-15, gy = y-15;
+    const gearActive = roomGearPanel?.kind === 'position' && roomGearPanel.id === p.id;
+    drawGearGlyph(ctx, gx, gy, gearActive);
+    roomEditGearTargets.push({ kind: 'position', id: p.id, cx: gx, cy: gy });
   }
 }
 
@@ -897,6 +929,12 @@ function wireRoomEditor(cv){
       return;
     }
 
+    const gear = roomEditGearTargets.find((t) => Math.hypot(t.cx-pt.x, t.cy-pt.y) <= 11);
+    if (gear) {
+      e.preventDefault();
+      openRoomGearPanel(gear.kind, gear.id);
+      return;
+    }
     const toggle = roomEditToggleTargets.find((t) => Math.hypot(t.cx-pt.x, t.cy-pt.y) <= 11);
     if (toggle) {
       e.preventDefault();
@@ -1110,6 +1148,362 @@ async function createRoomSpeaker(x, y) {
     showToast(`Added speaker "${label}" (bus "${busId}", output "${outputId}")`, 'ok');
     setRoomAddMode(null);
   } catch (err) { showRoomAddError(String(err)); }
+}
+
+/* ---------- interactive room editor: gear/settings panel (Stage 4) ---------- */
+// Tapping the gear glyph on a speaker or position icon opens an inline panel
+// (same #roomAddPanel-style pattern as Stage 3) with the full field set for
+// that item. Speaker icons are really a {physicalOutput, bus} pair (see
+// findOutputForSpeaker() above + CLAUDE.md's two-layer schema note) --
+// position icons are flat room.positions[] entries, one PUT does it.
+
+/** id -> "Title Case With Spaces", for auto-generating sharedDrivers driver
+ *  labels when the multi-select adds a speaker with no better label source. */
+function titleCaseFromId(id) {
+  return String(id).split('_').filter(Boolean).map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+}
+
+/** Tapped a gear glyph: open (or retarget) the settings panel for that icon.
+ *  Swaps contents in place -- never stacks a second panel. */
+function openRoomGearPanel(kind, id) {
+  roomGearPanel = { kind, id };
+  renderRoomGearPanel();
+  const cv = $('roomMapEdit');
+  if (cv) drawRoomInteractive(cv);
+}
+
+function closeRoomGearPanel() {
+  roomGearPanel = null;
+  renderRoomGearPanel();
+  const cv = $('roomMapEdit');
+  if (cv) drawRoomInteractive(cv);
+}
+
+/** Rebuilds #roomGearPanel for the current roomGearPanel state and wires
+ *  whatever it just drew. Called on every renderSettings() (so the div
+ *  starts empty/populated correctly) and after every gear-glyph tap. */
+function renderRoomGearPanel(){
+  const panel = $('roomGearPanel');
+  if (!panel) return;
+  if (!roomGearPanel) { panel.innerHTML = ''; return; }
+  if (roomGearPanel.kind === 'speaker') renderSpeakerGearPanel(panel);
+  else renderPositionGearPanel(panel);
+}
+
+/** Speaker gear panel: really editing a {physicalOutput, bus} pair resolved
+ *  via findOutputForSpeaker() then buses.find(sourceBusId). */
+function renderSpeakerGearPanel(panel){
+  const C = appConfig.config, R = appConfig.room;
+  const speakerId = roomGearPanel.id;
+  const speaker = R.speakers.find((s) => s.id === speakerId);
+  if (!speaker) {
+    panel.innerHTML = `<p class="hint warn">Speaker "${esc(speakerId)}" no longer exists.</p>`;
+    roomGearPanel = null;
+    return;
+  }
+  const output = findOutputForSpeaker(speakerId, C.physicalOutputs);
+  if (!output) {
+    panel.innerHTML = `<div class="card" style="margin-top:10px">
+      <h3 style="margin:0 0 8px">Speaker: ${esc(speakerId)}</h3>
+      <p class="hint warn">No physical output references this speaker yet — nothing to configure here.</p>
+      <div class="cardfoot"><button class="small secondary" id="gearClose">Close</button></div></div>`;
+    $('gearClose').onclick = closeRoomGearPanel;
+    return;
+  }
+  const bus = C.buses.find((b) => b.id === output.sourceBusId);
+  if (!bus) {
+    panel.innerHTML = `<div class="card" style="margin-top:10px">
+      <h3 style="margin:0 0 8px">${esc(output.label)}</h3>
+      <p class="hint warn">Output "${esc(output.id)}" references missing bus "${esc(output.sourceBusId)}".</p>
+      <div class="cardfoot"><button class="small secondary" id="gearClose">Close</button></div></div>`;
+    $('gearClose').onclick = closeRoomGearPanel;
+    return;
+  }
+
+  // Full set of driver speaker ids for this output -- the anchoring speaker
+  // is necessarily one of them, so it's always in the set even if the
+  // output's own data were somehow missing it.
+  const currentSources = output.sharedDrivers
+    ? output.sharedDrivers.drivers.map((d) => d.speakerId).filter(Boolean)
+    : (output.speakerId ? [output.speakerId] : []);
+  const sourcesSet = new Set(currentSources);
+  sourcesSet.add(speakerId);
+
+  const otherOutputsOnBus = C.physicalOutputs.filter((o) => o.sourceBusId === bus.id && o.id !== output.id);
+  const shared = bus.stereo === true || otherOutputsOnBus.length > 0;
+
+  const sourceOptions = (R.speakers || []).map((s) => {
+    const pinned = s.id === speakerId;
+    const checked = sourcesSet.has(s.id);
+    return `<label class="modeopt" style="padding:6px 8px"><input type="checkbox" class="gear_source" value="${esc(s.id)}" ${checked ? 'checked' : ''} ${pinned ? 'disabled' : ''}>
+      <span>${esc(s.id)}${pinned ? ' (this speaker — always included)' : ''}</span></label>`;
+  }).join('');
+
+  const positionOptions = (R.positions || []).map((p) => {
+    const checked = Array.isArray(bus.alignPositions) && bus.alignPositions.includes(p.id);
+    return `<label class="modeopt" style="padding:6px 8px"><input type="checkbox" class="gear_alignpos" value="${esc(p.id)}" ${checked ? 'checked' : ''}>
+      <span>${esc(p.label)}</span></label>`;
+  }).join('');
+
+  panel.innerHTML = `
+    <div class="card" style="margin-top:10px">
+      <h3 style="margin:0 0 8px">Speaker: ${esc(speakerId)}</h3>
+      ${shared ? `<p class="hint warn">This routing/band/role/trim is shared with: ${esc(otherOutputsOnBus.map((o) => o.label).join(', ') || bus.label)} — saving updates the ONE shared bus (affects the other output(s) too).</p>` : ''}
+      <div class="frow"><label>Label</label><input type="text" id="gear_sp_label" value="${esc(output.label)}"></div>
+      <label class="modeopt"><input type="checkbox" id="gear_sp_enabled" ${output.enabled !== false ? 'checked' : ''}><span><b>Enabled</b></span></label>
+      <div class="frow"><label>Routing type</label><select id="gear_sp_wtype">
+        <option value="main" ${bus.wing?.type !== 'mtx' ? 'selected' : ''}>main</option>
+        <option value="mtx" ${bus.wing?.type === 'mtx' ? 'selected' : ''}>mtx</option>
+      </select></div>
+      <div class="frow"><label>Routing #</label><input type="number" id="gear_sp_wnum" value="${bus.wing?.num ?? 1}" min="1" max="64"></div>
+      <div class="frow"><label>Band lo Hz</label><input type="number" id="gear_sp_lo" value="${bus.band?.[0] ?? 20}" min="10" max="24000"></div>
+      <div class="frow"><label>Band hi Hz</label><input type="number" id="gear_sp_hi" value="${bus.band?.[1] ?? 20000}" min="10" max="24000"></div>
+      <div class="frow"><label>Sweep trim dB</label><input type="number" id="gear_sp_trim" value="${bus.sweepTrimDb ?? 0}" min="-60" max="0" step="1"></div>
+      <div class="frow"><label>Role</label><select id="gear_sp_role">
+        <option value="main" ${bus.role === 'main' ? 'selected' : ''}>main</option>
+        <option value="sub" ${bus.role === 'sub' ? 'selected' : ''}>sub</option>
+        <option value="fill" ${bus.role === 'fill' ? 'selected' : ''}>fill</option>
+      </select></div>
+      <div id="gear_sp_fillfields" style="display:${bus.role === 'fill' ? '' : 'none'}">
+        <div class="frow"><label>Align to</label><input type="text" value="mains" disabled></div>
+        <p class="hint" style="margin-bottom:4px">Align positions</p>
+        <div>${positionOptions}</div>
+      </div>
+      <p class="hint" style="margin-bottom:4px">Sources — every driver speaker for this output (this speaker is always included; add more for a shared/side-fill pair).</p>
+      <div>${sourceOptions}</div>
+      <p id="gearSpError" class="hint warn" style="display:none"></p>
+      <div class="cardfoot">
+        <button class="small secondary" id="gearSpDelete">Delete</button>
+        <button class="small secondary" id="gearClose">Close</button>
+        <button class="small" id="gearSpSave">Save</button>
+      </div>
+    </div>`;
+
+  $('gear_sp_role').addEventListener('change', () => {
+    $('gear_sp_fillfields').style.display = $('gear_sp_role').value === 'fill' ? '' : 'none';
+  });
+  $('gearClose').onclick = closeRoomGearPanel;
+  $('gearSpSave').onclick = () => saveSpeakerGearPanel(output, bus);
+  $('gearSpDelete').onclick = () => deleteSpeakerGearPanel(output, bus);
+}
+
+/** Save: build the full next bus and full next output (spread + override,
+ *  same pattern as createRoomSpeaker), PUT the bus then the output. */
+async function saveSpeakerGearPanel(output, bus) {
+  const errEl = $('gearSpError');
+  const showErr = (msg) => { errEl.textContent = msg; errEl.style.display = ''; };
+  errEl.style.display = 'none';
+
+  const label = $('gear_sp_label').value.trim();
+  if (!label) return showErr('Label is required.');
+  const enabled = $('gear_sp_enabled').checked;
+  const wtype = $('gear_sp_wtype').value;
+  const wnum = Number($('gear_sp_wnum').value);
+  const lo = Number($('gear_sp_lo').value);
+  const hi = Number($('gear_sp_hi').value);
+  const trim = Number($('gear_sp_trim').value);
+  const role = $('gear_sp_role').value;
+
+  const selectedSources = [...document.querySelectorAll('.gear_source')].filter((c) => c.checked).map((c) => c.value);
+  if (!selectedSources.length) return showErr('At least one source speaker is required.');
+
+  const nextBus = { ...bus,
+    wing: { ...bus.wing, type: wtype, num: wnum },
+    band: [lo, hi],
+    sweepTrimDb: trim,
+    role
+  };
+  if (role === 'fill') {
+    const alignPositions = [...document.querySelectorAll('.gear_alignpos')].filter((c) => c.checked).map((c) => c.value);
+    nextBus.alignTo = 'mains';
+    nextBus.alignPositions = alignPositions;
+  } else {
+    delete nextBus.alignTo;
+    delete nextBus.alignPositions;
+  }
+
+  const nextOutput = { ...output, label, enabled };
+  if (selectedSources.length === 1) {
+    nextOutput.speakerId = selectedSources[0];
+    delete nextOutput.sharedDrivers;
+  } else {
+    const prevDrivers = output.sharedDrivers?.drivers || [];
+    const drivers = selectedSources.map((sid) => {
+      const prev = prevDrivers.find((d) => d.speakerId === sid);
+      return { label: (prev && prev.label) || titleCaseFromId(sid), speakerId: sid };
+    });
+    nextOutput.sharedDrivers = { count: drivers.length, drivers };
+    delete nextOutput.speakerId;
+  }
+
+  const put = async (url, obj) => {
+    const res = await fetch(url, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(obj) });
+    const body = await res.json();
+    return { ok: res.ok, body };
+  };
+  const errText = (body) => (body.errors ? body.errors.join(' · ') : (body.error || 'unknown error'));
+
+  const busRes = await put(`/api/buses/${encodeURIComponent(bus.id)}`, nextBus);
+  if (!busRes.ok) return showErr(`Bus save failed: ${errText(busRes.body)}`);
+  const outRes = await put(`/api/outputs/${encodeURIComponent(output.id)}`, nextOutput);
+  if (!outRes.ok) return showErr(`Bus saved, but output save failed: ${errText(outRes.body)}`);
+
+  showToast(`Saved "${label}"`, 'ok');
+  closeRoomGearPanel();
+}
+
+/** Delete: physicalOutput always allowed. Client-side, check whether this is
+ *  the last output referencing its bus and the last output referencing each
+ *  of its driver speaker id(s) -- if so, offer (one confirm dialog listing
+ *  exactly what's orphaned) to cascade those too. A native confirm() only
+ *  has two outcomes, but the spec wants three (cascade / output-only /
+ *  abort), so when there's something to cascade this asks a second, lighter
+ *  confirm rather than collapsing "keep the bus/speaker" into "abort" --
+ *  declining the cascade must still delete the output, per spec. */
+async function deleteSpeakerGearPanel(output, bus) {
+  const C = appConfig.config;
+  const otherOutputsOnBus = C.physicalOutputs.filter((o) => o.sourceBusId === bus.id && o.id !== output.id);
+  const busOrphaned = otherOutputsOnBus.length === 0;
+
+  const thisOutputSpeakerIds = output.sharedDrivers
+    ? output.sharedDrivers.drivers.map((d) => d.speakerId).filter(Boolean)
+    : (output.speakerId ? [output.speakerId] : []);
+  const orphanedSpeakerIds = thisOutputSpeakerIds.filter((sid) => !C.physicalOutputs.some((o) => {
+    if (o.id === output.id) return false;
+    if (o.speakerId === sid) return true;
+    return o.sharedDrivers?.drivers?.some((d) => d.speakerId === sid);
+  }));
+
+  const cascadeParts = [];
+  if (busOrphaned) cascadeParts.push(`bus "${bus.label}"`);
+  if (orphanedSpeakerIds.length) cascadeParts.push(`speaker point(s) ${orphanedSpeakerIds.join(', ')}`);
+
+  if (!cascadeParts.length) {
+    if (!confirm(`Delete physical output "${output.label}"? This cannot be undone.`)) return;
+    return performOutputDelete(output, bus, false, []);
+  }
+
+  const wantsCascade = confirm(
+    `Delete physical output "${output.label}"?\n\n` +
+    `This will also delete the now-unused ${cascadeParts.join(' and ')}, since nothing else references them.\n\n` +
+    `OK = delete everything listed above.\nCancel = keep them (you'll be asked next whether to delete just the output).`
+  );
+  if (wantsCascade) return performOutputDelete(output, bus, busOrphaned, orphanedSpeakerIds);
+
+  const outputOnly = confirm(`Delete ONLY physical output "${output.label}" and keep the ${cascadeParts.join(' and ')} in place?`);
+  if (!outputOnly) return; // fully aborted -- nothing deleted
+  return performOutputDelete(output, bus, false, []);
+}
+
+/** Actually issues the DELETE calls, in dependency order (output first, then
+ *  its now-possibly-orphaned bus, then speakers) -- each 409 is shown, not
+ *  swallowed, even though we only reach here after client-side checks say
+ *  they should be safe (another tab could have changed things meanwhile). */
+async function performOutputDelete(output, bus, cascadeBus, speakerIds) {
+  const del = async (url) => {
+    const res = await fetch(url, { method: 'DELETE' });
+    let body = {};
+    try { body = await res.json(); } catch { /* no body */ }
+    return { ok: res.ok, body };
+  };
+  const errText = (body) => (body.errors ? body.errors.join(' · ') : (body.error || 'unknown error'));
+
+  const outRes = await del(`/api/outputs/${encodeURIComponent(output.id)}`);
+  if (!outRes.ok) { showToast(`Delete failed: ${errText(outRes.body)}`, 'warn'); return; }
+
+  let msg = `Deleted output "${output.label}"`;
+  if (cascadeBus) {
+    const busRes = await del(`/api/buses/${encodeURIComponent(bus.id)}`);
+    if (busRes.ok) msg += `, bus "${bus.label}"`;
+    else showToast(`Output deleted, but bus delete failed: ${errText(busRes.body)}`, 'warn');
+  }
+  for (const sid of speakerIds) {
+    const spRes = await del(`/api/speakers/${encodeURIComponent(sid)}`);
+    if (spRes.ok) msg += `, speaker "${sid}"`;
+    else showToast(`Speaker "${sid}" delete failed: ${errText(spRes.body)}`, 'warn');
+  }
+  showToast(msg, 'ok');
+  closeRoomGearPanel();
+}
+
+/** Position gear panel: room.positions[] is flat, one PUT does everything. */
+function renderPositionGearPanel(panel) {
+  const R = appConfig.room;
+  const id = roomGearPanel.id;
+  const p = R.positions.find((x) => x.id === id);
+  if (!p) {
+    panel.innerHTML = `<p class="hint warn">Position "${esc(id)}" no longer exists.</p>`;
+    roomGearPanel = null;
+    return;
+  }
+
+  panel.innerHTML = `
+    <div class="card" style="margin-top:10px">
+      <h3 style="margin:0 0 8px">Position: ${esc(p.label)}</h3>
+      <div class="frow"><label>Label</label><input type="text" id="gear_pos_label" value="${esc(p.label)}"></div>
+      <div class="frow"><label>Zone</label><select id="gear_pos_zone">
+        <option value="main" ${p.zone === 'main' ? 'selected' : ''}>main</option>
+        <option value="balcony" ${p.zone === 'balcony' ? 'selected' : ''}>balcony</option>
+        <option value="under_balcony" ${p.zone === 'under_balcony' ? 'selected' : ''}>under_balcony</option>
+      </select></div>
+      <div class="frow"><label>Weight</label><input type="number" id="gear_pos_weight" value="${p.weight ?? 1}" min="0" step="0.1"></div>
+      <div class="frow"><label>X (m)</label><input type="number" id="gear_pos_x" value="${p.x}" step="0.01"></div>
+      <div class="frow"><label>Y (m)</label><input type="number" id="gear_pos_y" value="${p.y}" step="0.01"></div>
+      <div class="frow"><label>Z (m)</label><input type="number" id="gear_pos_z" value="${p.z ?? 1.2}" min="0" max="20" step="0.01"></div>
+      <label class="modeopt"><input type="checkbox" id="gear_pos_enabled" ${p.enabled !== false ? 'checked' : ''}><span><b>Enabled</b></span></label>
+      <p id="gearPosError" class="hint warn" style="display:none"></p>
+      <div class="cardfoot">
+        <button class="small secondary" id="gearPosDelete">Delete</button>
+        <button class="small secondary" id="gearClose">Close</button>
+        <button class="small" id="gearPosSave">Save</button>
+      </div>
+    </div>`;
+
+  $('gearClose').onclick = closeRoomGearPanel;
+  $('gearPosSave').onclick = () => savePositionGearPanel(p);
+  $('gearPosDelete').onclick = () => deletePositionGearPanel(p);
+}
+
+async function savePositionGearPanel(orig) {
+  const errEl = $('gearPosError');
+  const showErr = (msg) => { errEl.textContent = msg; errEl.style.display = ''; };
+  errEl.style.display = 'none';
+
+  const label = $('gear_pos_label').value.trim();
+  if (!label) return showErr('Label is required.');
+  const body = { ...orig,
+    label,
+    zone: $('gear_pos_zone').value,
+    weight: Number($('gear_pos_weight').value),
+    x: Number($('gear_pos_x').value),
+    y: Number($('gear_pos_y').value),
+    z: Number($('gear_pos_z').value),
+    enabled: $('gear_pos_enabled').checked
+  };
+  try {
+    const res = await fetch(`/api/positions/${encodeURIComponent(orig.id)}`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body)
+    });
+    const respBody = await res.json();
+    if (!res.ok) return showErr(respBody.errors ? respBody.errors.join(' · ') : (respBody.error || `HTTP ${res.status}`));
+    showToast(`Saved "${label}"`, 'ok');
+    closeRoomGearPanel();
+  } catch (err) { showErr(String(err)); }
+}
+
+/** Delete: no client-side pre-check needed (unlike outputs, positions have
+ *  no cascade) -- just confirm, delete, and surface the server's 409 reason
+ *  verbatim if it's referenced (verifyPosition / loudness reference /
+ *  alignPositions). */
+async function deletePositionGearPanel(p) {
+  if (!confirm(`Delete position "${p.label}"? This cannot be undone.`)) return;
+  try {
+    const res = await fetch(`/api/positions/${encodeURIComponent(p.id)}`, { method: 'DELETE' });
+    const body = await res.json();
+    if (!res.ok) { showToast(body.error || `HTTP ${res.status}`, 'warn'); return; }
+    showToast(`Deleted position "${p.label}"`, 'ok');
+    closeRoomGearPanel();
+  } catch (err) { showToast(String(err), 'warn'); }
 }
 
 function renderPosList(){
@@ -1446,11 +1840,11 @@ function renderSettings(){
         <button class="small secondary" id="btnRoomAddToggle" style="flex:0 0 auto">+ Add</button>
       </div>
       <div id="roomAddPanel"></div>
-      <p class="hint">Drag a speaker (triangle) or measurement position (circle) to reposition it — saves on release. Tap the small checkbox next to an icon to enable/disable it (dimmed = disabled). Disabled positions are skipped during Full Tune; disabled speakers' outputs are skipped everywhere.</p>
+      <div id="roomGearPanel"></div>
+      <p class="hint">Drag a speaker (triangle) or measurement position (circle) to reposition it — saves on release. Tap the small checkbox next to an icon to enable/disable it (dimmed = disabled). Tap the gear icon next to an icon to edit its full settings (routing, band, role, delete, etc).</p>
       ${frow('Verify position', `<select id="set_verify_pos">${R.positions.map((p) =>
         `<option value="${esc(p.id)}" ${p.id === R.verifyPosition ? 'selected' : ''}>${esc(p.label)}</option>`).join('')}</select>`)}
       <p class="hint">${esc(R.name)} · ${R.width} m wide · ${R.positions.length} positions · ${(R.speakers || []).length} speakers</p>
-      <p class="hint">Deleting speakers/positions and per-item routing details are still config-file-only for now (a later stage adds that UI).</p>
       <div class="cardfoot"><button class="small" id="save_room" disabled>Save</button></div>
     </div>
 
@@ -1496,6 +1890,7 @@ function renderSettings(){
     }
     renderRoomAddPanel();
   }
+  renderRoomGearPanel();
   $('set_rawjson').addEventListener('input', () => markDirty('raw'));
   wire('loudness', ['lm_enabled', 'lm_pos', 'lm_target', 'lm_soft', 'lm_hard', 'lm_sustained', 'lm_window', 'lm_quiet_on', 'lm_quiet']);
   $('lm_pos').addEventListener('change', () => markDirty('loudness'));
