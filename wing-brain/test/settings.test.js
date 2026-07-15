@@ -5,7 +5,10 @@ import assert from 'node:assert';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { mergeDeep, writeJsonAtomic, validateConfig, validateRoomPatch, activeTargetCurve } from '../src/config/settings.js';
+import {
+  mergeDeep, writeJsonAtomic, validateConfig, validateRoomPatch, activeTargetCurve,
+  roomBounds, isWithinRoomBounds, validateSpeakersArray, validatePositionsArray
+} from '../src/config/settings.js';
 
 const goodConfig = () => JSON.parse(fs.readFileSync(new URL('../config/default.json', import.meta.url), 'utf8'));
 const room = JSON.parse(fs.readFileSync(new URL('../config/room.json', import.meta.url), 'utf8'));
@@ -290,4 +293,98 @@ test('room patch rejects an unknown position id', () => {
 test('room patch rejects geometry edits — only verifyPosition is API-editable', () => {
   const errors = validateRoomPatch({ verifyPosition: room.positions[0].id, width: 25 }, room);
   assert.ok(errors.some((e) => /only verifyPosition/.test(e)));
+});
+
+/* ------------------------------- roomBounds ------------------------------- */
+
+test('roomBounds computes the bounding box of room.walls', () => {
+  const b = roomBounds(room);
+  assert.ok(b);
+  assert.equal(b.minX, 0);
+  assert.equal(b.maxX, 18.5);
+  assert.equal(b.minY, -7);
+  assert.equal(b.maxY, 14);
+});
+
+test('roomBounds returns null when walls are missing or empty', () => {
+  assert.equal(roomBounds({}), null);
+  assert.equal(roomBounds({ walls: [] }), null);
+  assert.equal(roomBounds(null), null);
+});
+
+test('isWithinRoomBounds accepts points inside the wall bbox and rejects points outside', () => {
+  assert.equal(isWithinRoomBounds(9.25, 3, room), true);
+  assert.equal(isWithinRoomBounds(-5, 3, room), false);
+  assert.equal(isWithinRoomBounds(9.25, 100, room), false);
+});
+
+test('isWithinRoomBounds skips the check (returns true) when walls are unknown', () => {
+  assert.equal(isWithinRoomBounds(99999, -99999, {}), true);
+});
+
+/* --------------------------- validateSpeakersArray ------------------------ */
+
+test('validateSpeakersArray accepts the shipped room.speakers', () => {
+  assert.deepEqual(validateSpeakersArray(room.speakers, room), []);
+});
+
+test('validateSpeakersArray rejects duplicate ids', () => {
+  const speakers = [room.speakers[0], { ...room.speakers[1], id: room.speakers[0].id }];
+  assert.ok(validateSpeakersArray(speakers, room).some((e) => /duplicate id/.test(e)));
+});
+
+test('validateSpeakersArray rejects x/y outside room bounds, accepts when walls unknown', () => {
+  const speakers = [{ id: 's1', x: -500, y: 3, z: 5 }];
+  assert.ok(validateSpeakersArray(speakers, room).some((e) => /outside the room's wall bounds/.test(e)));
+  assert.deepEqual(validateSpeakersArray(speakers, {}), [], 'no walls known — bounds check skipped');
+});
+
+test('validateSpeakersArray rejects a negative or absurd z', () => {
+  assert.ok(validateSpeakersArray([{ id: 's1', x: 1, y: 1, z: -1 }], room).some((e) => /\.z:/.test(e)));
+  assert.ok(validateSpeakersArray([{ id: 's1', x: 1, y: 1, z: 999 }], room).some((e) => /\.z:/.test(e)));
+});
+
+test('validateSpeakersArray requires an array', () => {
+  assert.ok(validateSpeakersArray(null, room).some((e) => /must be an array/.test(e)));
+});
+
+/* -------------------------- validatePositionsArray ------------------------ */
+
+test('validatePositionsArray accepts the shipped room.positions', () => {
+  assert.deepEqual(validatePositionsArray(room.positions, room), []);
+});
+
+test('validatePositionsArray rejects an unknown zone', () => {
+  const positions = [{ ...room.positions[0], zone: 'nowhere' }];
+  assert.ok(validatePositionsArray(positions, room).some((e) => /zone/.test(e)));
+});
+
+test('validatePositionsArray rejects a negative weight', () => {
+  const positions = [{ ...room.positions[0], weight: -1 }];
+  assert.ok(validatePositionsArray(positions, room).some((e) => /weight/.test(e)));
+});
+
+test('validatePositionsArray rejects an empty label', () => {
+  const positions = [{ ...room.positions[0], label: '' }];
+  assert.ok(validatePositionsArray(positions, room).some((e) => /label/.test(e)));
+});
+
+/* --------------------- validateRoomPatch: widened behavior ---------------- */
+
+test('validateRoomPatch accepts a valid speakers-array patch', () => {
+  assert.deepEqual(validateRoomPatch({ speakers: room.speakers }, room), []);
+});
+
+test('validateRoomPatch accepts a valid positions-array patch', () => {
+  assert.deepEqual(validateRoomPatch({ positions: room.positions }, room), []);
+});
+
+test('validateRoomPatch surfaces errors from a bad speakers-array patch', () => {
+  const errors = validateRoomPatch({ speakers: [{ id: 's1', x: 1, y: 1, z: -1 }] }, room);
+  assert.ok(errors.some((e) => /\.z:/.test(e)));
+});
+
+test('validateRoomPatch still rejects unknown top-level keys alongside the new ones', () => {
+  const errors = validateRoomPatch({ width: 25 }, room);
+  assert.ok(errors.some((e) => /only verifyPosition, speakers, positions are editable/.test(e)));
 });

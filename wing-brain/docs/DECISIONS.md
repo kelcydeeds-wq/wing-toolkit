@@ -3,6 +3,59 @@
 Running log of judgment calls made during autonomous work runs, so they can be
 reviewed and reversed if wrong.
 
+## 2026-07-15 — visual speaker/output editor, Stage 1: backend persistence
+
+Stage 1 of a 5-stage feature (replacing the static config-driven output setup
+with an interactive canvas editor). This stage is REST endpoints only —
+`PUT`/`DELETE` on `/api/buses/:id`, `/api/outputs/:id`, `/api/speakers/:id`,
+`/api/positions/:id` in `src/server.js`, plus validation in
+`src/config/settings.js` (`validateSpeakersArray`, `validatePositionsArray`,
+`roomBounds`/`isWithinRoomBounds`, and a widened `validateRoomPatch`). No
+frontend work; stages 2-5 are separate follow-up.
+
+- **physicalOutput-vs-bus field split (relevant to Stage 4's settings
+  panel):** the two-layer routing model (`config.buses[]` vs
+  `config.physicalOutputs[]`, see `src/tune/session.js`'s top comment) means
+  a single physical output's "settings panel" is really a UNION of two
+  objects: the physicalOutput's own fields (label/enabled/sourceBusId/
+  speakerId/sharedDrivers) plus its resolved bus's fields (band/role/
+  sweepTrimDb/wing.type+num/alignTo/alignPositions). Stage 1 keeps `PUT
+  /api/buses/:id` and `PUT /api/outputs/:id` as two separate endpoints
+  rather than one combined "edit this output" endpoint, because that's the
+  actual data shape and collapsing it would hide the sharing relationship.
+  The consequence Stage 4 needs to know: for a bus with multiple physical
+  outputs (stereo mains — `main_l_out`/`main_r_out` both point at bus
+  `mains`), editing a bus-level field from EITHER output's panel writes the
+  same shared bus and therefore changes both outputs at once. Stage 4's UI
+  should surface this as a visible note ("editing this also changes Main R")
+  rather than let it be a silent surprise. Stage 1 does not attempt to
+  prevent or special-case this — `PUT /api/buses/:id` just upserts the one
+  bus object, same as today's config.json semantics.
+- **Room-bounds check is a wall-polygon bounding box, not full
+  point-in-polygon** (`roomBounds`/`isWithinRoomBounds` in settings.js).
+  This church's room is close enough to rectangular that a bbox catches the
+  actual failure mode (typo'd coordinates wildly outside the building) without
+  the complexity of a real polygon containment test, and it mirrors the bbox
+  math `drawRoom()` in public/index.html already uses client-side. The check
+  is skipped entirely (accepts any x/y) when `room.walls` is missing or
+  empty, per the request's "bounds if known" framing — an editor with no
+  geometry loaded shouldn't reject every point.
+- **`validateRoomPatch` widened, not replaced:** it used to accept only
+  `{verifyPosition}`. Rather than add a parallel/separate validator (which
+  risked drifting from the original rules), the same function now also
+  accepts `speakers`/`positions` array patches, delegating to the new
+  `validateSpeakersArray`/`validatePositionsArray`. The original
+  `verifyPosition`-only behavior — including its exact rejection message
+  prefix ("only verifyPosition...") — is unchanged; every pre-existing test
+  for it in `test/settings.test.js` passes unmodified.
+- **Delete guards enumerate referencing entities in the error message**
+  (e.g. deleting a bus lists which `physicalOutputs[].id`s still reference
+  it; deleting a position lists whether it's `room.verifyPosition`, the
+  loudness monitor's reference position, or an `alignPositions` entry) so
+  the eventual Stage 2+ UI can render an actionable message instead of a
+  bare "can't delete" — this was not explicitly specified but follows the
+  existing project convention of path-specific validation messages.
+
 ## 2026-07-15 — level-aware sweep control: target-SPL sweep level + auto-SNR safety net
 
 Two additive features on top of the existing loudness-monitor calibration

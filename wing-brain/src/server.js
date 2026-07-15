@@ -195,6 +195,151 @@ app.post('/api/config', (req, res) => {
   res.json({ ok: true, config, room });
 });
 
+/* ------------------------- Visual editor API (Stage 1) -------------------- */
+// Backend persistence for the interactive speaker/output editor. Stages 2-5
+// (canvas dragging, add/remove UI, settings panels, Wing-discovery tie-in)
+// are separate follow-up work — this is only the REST surface they call.
+// Every write here follows the exact same guard/validate/write/rebuild/
+// broadcast shape as POST /api/config above.
+
+function busyResponse(res) {
+  return res.status(409).json({
+    error: `a session is ${session.state} — finish, apply, or discard it before changing settings`
+  });
+}
+
+/** Validate + persist a full next `config`, mirroring POST /api/config. */
+function commitConfig(nextConfig, res) {
+  const errors = validateConfig(nextConfig, room);
+  if (errors.length) return res.status(400).json({ error: 'validation failed', errors });
+  writeJsonAtomic(CONFIG_PATH, nextConfig);
+  config = nextConfig;
+  buildRuntime();
+  broadcast('config', { config, room });
+  broadcast('room', room);
+  broadcast('session', session.snapshot());
+  res.json({ ok: true, config, room });
+}
+
+/** Validate + persist a full next `room`, via a room-patch-shaped object so
+ *  it goes through the same validateRoomPatch rules as POST /api/config. */
+function commitRoomPatch(patch, nextRoomFull, res) {
+  const errors = validateRoomPatch(patch, room);
+  if (errors.length) return res.status(400).json({ error: 'validation failed', errors });
+  writeJsonAtomic(ROOM_PATH, nextRoomFull);
+  room = nextRoomFull;
+  buildRuntime();
+  broadcast('config', { config, room });
+  broadcast('room', room);
+  broadcast('session', session.snapshot());
+  res.json({ ok: true, config, room });
+}
+
+// --- Buses (config.buses[]) ---
+
+app.put('/api/buses/:id', (req, res) => {
+  if (sessionBusy()) return busyResponse(res);
+  const id = req.params.id;
+  const body = { ...(req.body || {}), id };
+  const nextBuses = config.buses.some((b) => b.id === id)
+    ? config.buses.map((b) => (b.id === id ? body : b))
+    : [...config.buses, body];
+  commitConfig({ ...config, buses: nextBuses }, res);
+});
+
+app.delete('/api/buses/:id', (req, res) => {
+  if (sessionBusy()) return busyResponse(res);
+  const id = req.params.id;
+  const referencing = config.physicalOutputs.filter((o) => o.sourceBusId === id).map((o) => o.id);
+  if (referencing.length) {
+    return res.status(409).json({
+      error: `bus "${id}" is still referenced by physicalOutputs: ${referencing.join(', ')} — repoint or delete them first`
+    });
+  }
+  const nextBuses = config.buses.filter((b) => b.id !== id);
+  commitConfig({ ...config, buses: nextBuses }, res);
+});
+
+// --- Physical outputs (config.physicalOutputs[]) ---
+
+app.put('/api/outputs/:id', (req, res) => {
+  if (sessionBusy()) return busyResponse(res);
+  const id = req.params.id;
+  const body = { ...(req.body || {}), id };
+  const nextOutputs = config.physicalOutputs.some((o) => o.id === id)
+    ? config.physicalOutputs.map((o) => (o.id === id ? body : o))
+    : [...config.physicalOutputs, body];
+  commitConfig({ ...config, physicalOutputs: nextOutputs }, res);
+});
+
+app.delete('/api/outputs/:id', (req, res) => {
+  if (sessionBusy()) return busyResponse(res);
+  const id = req.params.id;
+  const nextOutputs = config.physicalOutputs.filter((o) => o.id !== id);
+  commitConfig({ ...config, physicalOutputs: nextOutputs }, res);
+});
+
+// --- Speakers (room.speakers[]) ---
+
+app.put('/api/speakers/:id', (req, res) => {
+  if (sessionBusy()) return busyResponse(res);
+  const id = req.params.id;
+  const body = { ...(req.body || {}), id };
+  const nextSpeakers = room.speakers.some((s) => s.id === id)
+    ? room.speakers.map((s) => (s.id === id ? body : s))
+    : [...room.speakers, body];
+  commitRoomPatch({ speakers: nextSpeakers }, { ...room, speakers: nextSpeakers }, res);
+});
+
+app.delete('/api/speakers/:id', (req, res) => {
+  if (sessionBusy()) return busyResponse(res);
+  const id = req.params.id;
+  const reasons = [];
+  for (const o of config.physicalOutputs) {
+    if (o.speakerId === id) reasons.push(o.id);
+    for (const d of o.sharedDrivers?.drivers || []) {
+      if (d.speakerId === id) reasons.push(`${o.id} (sharedDrivers: "${d.label}")`);
+    }
+  }
+  if (reasons.length) {
+    return res.status(409).json({
+      error: `speaker "${id}" is still referenced by physicalOutputs: ${reasons.join(', ')} — repoint or delete them first`
+    });
+  }
+  const nextSpeakers = room.speakers.filter((s) => s.id !== id);
+  commitRoomPatch({ speakers: nextSpeakers }, { ...room, speakers: nextSpeakers }, res);
+});
+
+// --- Measurement positions (room.positions[]) ---
+
+app.put('/api/positions/:id', (req, res) => {
+  if (sessionBusy()) return busyResponse(res);
+  const id = req.params.id;
+  const body = { ...(req.body || {}), id };
+  const nextPositions = room.positions.some((p) => p.id === id)
+    ? room.positions.map((p) => (p.id === id ? body : p))
+    : [...room.positions, body];
+  commitRoomPatch({ positions: nextPositions }, { ...room, positions: nextPositions }, res);
+});
+
+app.delete('/api/positions/:id', (req, res) => {
+  if (sessionBusy()) return busyResponse(res);
+  const id = req.params.id;
+  const reasons = [];
+  if (room.verifyPosition === id) reasons.push('room.verifyPosition');
+  if (config.loudnessMonitor?.referencePositionId === id) reasons.push('config.loudnessMonitor.referencePositionId');
+  for (const b of config.buses) {
+    if (Array.isArray(b.alignPositions) && b.alignPositions.includes(id)) {
+      reasons.push(`config.buses.${b.id}.alignPositions`);
+    }
+  }
+  if (reasons.length) {
+    return res.status(409).json({ error: `position "${id}" is still referenced by: ${reasons.join(', ')}` });
+  }
+  const nextPositions = room.positions.filter((p) => p.id !== id);
+  commitRoomPatch({ positions: nextPositions }, { ...room, positions: nextPositions }, res);
+});
+
 // Harmless connectivity probe. Accepts optional {host, port, mode} so the
 // settings page can test values BEFORE saving them.
 app.post('/api/test-wing', async (req, res) => {

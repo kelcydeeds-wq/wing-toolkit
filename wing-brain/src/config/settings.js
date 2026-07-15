@@ -316,24 +316,112 @@ export function activeTargetCurve(config) {
 }
 
 /**
- * Room updates through the API are deliberately narrow: only the verify
- * position is settable. Geometry edits still happen in room.json by hand —
- * the map/positions drive delay predictions, so they change on-site with a
- * tape measure, not from a phone form.
+ * Bounding box of room.walls (min/max of each coordinate) — a cheap
+ * containment check, not full point-in-polygon (rooms here are close enough
+ * to rectangular that a bbox is a useful sanity check, not a precise
+ * boundary). Mirrors the client-side bbox math `drawRoom()` in
+ * public/index.html already uses. Returns null when walls are unknown/empty
+ * so callers can skip the check rather than reject.
+ */
+export function roomBounds(room) {
+  const walls = room?.walls;
+  if (!Array.isArray(walls) || walls.length === 0) return null;
+  const xs = walls.map((p) => p[0]);
+  const ys = walls.map((p) => p[1]);
+  return { minX: Math.min(...xs), maxX: Math.max(...xs), minY: Math.min(...ys), maxY: Math.max(...ys) };
+}
+
+/** True if [x, y] falls within room.walls' bounding box, or if walls are
+ *  unknown (bounds are "if known" per the Stage 1 spec — never reject a
+ *  point just because we have no geometry to check it against). */
+export function isWithinRoomBounds(x, y, room) {
+  const b = roomBounds(room);
+  if (!b) return true;
+  return x >= b.minX && x <= b.maxX && y >= b.minY && y <= b.maxY;
+}
+
+const MAX_Z_M = 20; // sane hardcoded cap for fly/mount height — not a guardrail
+
+/** Validate a full room.speakers array ({id, x, y, z, note?}). Returns an
+ *  array of error strings; empty = valid. `room` is used only for bounds
+ *  (the array being validated may itself be the candidate next value, so
+ *  duplicate-id checks are against `speakers`, not `room.speakers`). */
+export function validateSpeakersArray(speakers, room) {
+  if (!Array.isArray(speakers)) return ['room.speakers: must be an array'];
+  const errors = [];
+  const bad = (msg) => errors.push(msg);
+  const ids = new Set();
+  speakers.forEach((s, i) => {
+    const at = `room.speakers[${i}]`;
+    if (!isStr(s?.id)) bad(`${at}.id: must be a non-empty string`);
+    else if (ids.has(s.id)) bad(`${at}.id: duplicate id "${s.id}"`);
+    else ids.add(s.id);
+    if (!isNum(s?.x) || !isNum(s?.y)) bad(`${at}.x/y: must be numbers`);
+    else if (!isWithinRoomBounds(s.x, s.y, room)) bad(`${at}.x/y: outside the room's wall bounds`);
+    if (s?.z !== undefined && (!isNum(s.z) || s.z < 0 || s.z > MAX_Z_M)) {
+      bad(`${at}.z: must be a number 0-${MAX_Z_M} (meters)`);
+    }
+    if (s?.note !== undefined && typeof s.note !== 'string') bad(`${at}.note: must be a string`);
+  });
+  return errors;
+}
+
+/** Validate a full room.positions array ({id, label, zone, x, y, z, weight}).
+ *  Same shape/reasoning as validateSpeakersArray. */
+export function validatePositionsArray(positions, room) {
+  if (!Array.isArray(positions)) return ['room.positions: must be an array'];
+  const errors = [];
+  const bad = (msg) => errors.push(msg);
+  const ids = new Set();
+  positions.forEach((p, i) => {
+    const at = `room.positions[${i}]`;
+    if (!isStr(p?.id)) bad(`${at}.id: must be a non-empty string`);
+    else if (ids.has(p.id)) bad(`${at}.id: duplicate id "${p.id}"`);
+    else ids.add(p.id);
+    if (!isStr(p?.label)) bad(`${at}.label: must be a non-empty string`);
+    if (!['main', 'balcony', 'under_balcony'].includes(p?.zone)) {
+      bad(`${at}.zone: must be "main", "balcony", or "under_balcony"`);
+    }
+    if (!isNum(p?.x) || !isNum(p?.y)) bad(`${at}.x/y: must be numbers`);
+    else if (!isWithinRoomBounds(p.x, p.y, room)) bad(`${at}.x/y: outside the room's wall bounds`);
+    if (p?.z !== undefined && (!isNum(p.z) || p.z < 0 || p.z > MAX_Z_M)) {
+      bad(`${at}.z: must be a number 0-${MAX_Z_M} (meters)`);
+    }
+    if (!isNum(p?.weight) || p.weight < 0) bad(`${at}.weight: must be a number >= 0`);
+  });
+  return errors;
+}
+
+/**
+ * Room updates through the API. Originally deliberately narrow (only the
+ * verify position was settable; geometry edits happened in room.json by
+ * hand). Widened for the visual speaker/output editor (Stage 1 of that
+ * feature) to also accept full-array replacements of `speakers` and
+ * `positions` — mergeDeep replaces arrays wholesale, so callers build the
+ * complete next array (one item added/updated/removed) and send it here.
+ * `verifyPosition`-only patches keep behaving exactly as before: same keys
+ * check, same message prefix, same validation.
  */
 export function validateRoomPatch(patch, room) {
   const errors = [];
   if (!patch || typeof patch !== 'object') return ['room: patch must be an object'];
   const keys = Object.keys(patch);
-  const extra = keys.filter((k) => k !== 'verifyPosition');
+  const known = ['verifyPosition', 'speakers', 'positions'];
+  const extra = keys.filter((k) => !known.includes(k));
   if (extra.length) {
-    errors.push(`room: only verifyPosition is editable via the API (got: ${extra.join(', ')}) — edit config/room.json directly for geometry`);
+    errors.push(`room: only verifyPosition, speakers, positions are editable via the API (got: ${extra.join(', ')}) — edit config/room.json directly for geometry`);
   }
   if (patch.verifyPosition !== undefined) {
     const ids = (room?.positions || []).map((p) => p.id);
     if (!ids.includes(patch.verifyPosition)) {
       errors.push(`room.verifyPosition: "${patch.verifyPosition}" is not a known position (${ids.join(', ')})`);
     }
+  }
+  if (patch.speakers !== undefined) {
+    errors.push(...validateSpeakersArray(patch.speakers, room));
+  }
+  if (patch.positions !== undefined) {
+    errors.push(...validatePositionsArray(patch.positions, room));
   }
   return errors;
 }
