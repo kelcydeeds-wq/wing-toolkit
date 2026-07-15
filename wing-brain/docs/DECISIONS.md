@@ -3,6 +3,66 @@
 Running log of judgment calls made during autonomous work runs, so they can be
 reviewed and reversed if wrong.
 
+## 2026-07-15 — hard gate: low-confidence measurements can't reach an applied correction
+
+Prompted by a real result from the 2026-07-14 church visit: a 300-500ms
+"delay" reading, which is not physically plausible for this room (would
+imply ~100m of unaccounted path). Diagnosis: `findDelay()`'s cross-correlation
+search window defaults to `maxDelayMs = 500` — when the mic channel has no
+real correlated signal (that visit's own notes already flag construction-noise
+contamination), the search has no true peak to lock onto and returns
+whatever noise happens to be highest, which can land anywhere up to the
+window ceiling. The system already retried once and warned
+("even after retry") on exactly this reading — it did its job — but the
+warning was soft: a low-confidence result still flowed into
+`buildRecommendations()` and could be written to the console if Apply was
+tapped without noticing.
+
+- **`TuneSession.confidenceFilteredResults()`** (new): the one gate
+  everything correction-facing must pass through — rows below
+  `LOW_CONFIDENCE_THRESHOLD` (3) are excluded. `buildRecommendations()`'s EQ
+  loop and its `recommendDelays()` call now both read from this filtered set
+  instead of `this.results` directly; `finish()` also passes it (not the raw
+  results) into `buildAnalysisPayload()`, so Claude never reasons over data
+  the local recommender itself distrusts.
+- **Raw data is never deleted** — `this.results` (and the downloadable
+  session record) still contains every measurement, low-confidence ones
+  included, for operator visibility/debugging. Only what feeds a
+  *correction* is filtered. This matches the project's existing pattern of
+  keeping raw data while guarding what gets applied (e.g. guardrail clamps
+  in `advisor.js` don't delete Claude's raw response, just what's trusted).
+- **A bus left with zero usable rows gets no `perOutput`/`delays` entry at
+  all** — not a zero-filled placeholder, not a best-guess. `apply()`'s
+  existing `if (!rec) continue` then silently (but correctly) skips writing
+  anything for that bus. `buildRecommendations()` now also returns
+  `excludedLowConfidenceCount` and `busesWithNoUsableData` so `finish()` can
+  warn about both cases explicitly, and the review screen shows the same
+  warnings persistently (the transient `#status` toast scrolls away; a
+  card on the review screen doesn't).
+- **Chose per-row exclusion over an all-or-nothing Apply block.** A single
+  bad position at one output, out of e.g. 8 positions × 4 buses, shouldn't
+  prevent applying the 31 good measurements alongside it — only the bus(es)
+  actually left without usable data lose their correction, and only for
+  positions/outputs that were actually bad.
+- **Verify mode was not touched.** It never wrote to the console in the
+  first place ("compares against stored baseline, writes nothing" — see the
+  file header) — the risk this closes is specific to Full Tune's Apply path.
+  `buildVerifyReport()` still surfaces raw `confidence` per row without a
+  gate; a low-confidence badge on that screen would be a reasonable follow-up
+  but is out of scope here.
+- **Test-writing note**: two new tests initially used a raw call-counter
+  (`call++ === 0 ? noisy : clean`) to simulate "first position bad, rest
+  good" — but the low-confidence retry itself consumes a second
+  `playAndCapture` call within the SAME position, so the retry's call landed
+  on the "clean" branch and silently rescued the position the test meant to
+  keep bad, making both tests pass without exercising exclusion at all
+  (caught because `excludedLowConfidenceCount` came back 0 instead of 1).
+  Fixed by branching on which position is being measured (an explicit
+  counter set between `ready()` calls), not a raw call count — the same
+  class of mistake as the "async thing didn't happen yet" and "LEQ10 window
+  blends levels" test bugs logged in earlier entries: the mock's timing
+  assumptions didn't match the code's actual call pattern.
+
 ## 2026-07-14 (church audit session) — FIRST live console contact: addresses largely confirmed, DCA/mute model corrected, output config fixed
 
 First time the toolchain ever touched the real Wing (192.168.25.80:2223, a

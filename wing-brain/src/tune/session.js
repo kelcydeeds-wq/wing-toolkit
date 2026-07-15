@@ -568,10 +568,20 @@ export class TuneSession {
     }
     const localRec = this.buildRecommendations();
     localRec.source = 'local';
+    if (localRec.excludedLowConfidenceCount) {
+      this.emit('warning', {
+        message: `${localRec.excludedLowConfidenceCount} measurement(s) excluded from correction — confidence stayed low even after retry. They're kept in the downloadable session record but never fed into an EQ/delay recommendation.`
+      });
+    }
+    for (const label of localRec.busesWithNoUsableData) {
+      this.emit('warning', {
+        message: `${label}: every measurement at every position was low-confidence — no correction generated for this bus. Retake when the room is quieter.`
+      });
+    }
 
     this.emit('info', { message: 'Measurements done — sending analysis to Claude for tuning…' });
     const payload = buildAnalysisPayload({
-      config: this.cfg, room: this.room, results: this.results, localRec
+      config: this.cfg, room: this.room, results: this.confidenceFilteredResults(), localRec
     });
     this.lastAnalysisPayload = payload; // exposed for export/debug
 
@@ -614,19 +624,39 @@ export class TuneSession {
     return (d / 343) * 1000;
   }
 
+  /** Rows whose delay confidence cleared LOW_CONFIDENCE_THRESHOLD, even after
+   *  the one automatic retry in measureOnePhysicalOutput(). A row that never
+   *  clears it is real data — kept in `results` / the downloadable session
+   *  record for the operator to see — but must never be able to pull a bus's
+   *  EQ or delay correction off target, so nothing that feeds a
+   *  recommendation reads `results` directly; it goes through this filter. */
+  confidenceFilteredResults() {
+    return this.results.filter((r) => r.confidence >= LOW_CONFIDENCE_THRESHOLD);
+  }
+
   /**
    * Corrections are built per BUS, pooling every result row tagged with
    * that bus's id — regardless of whether those rows came from different mic
    * positions, different physical outputs sharing the bus (stereo mains), or
    * a wizard's combined sweep. spatialAverage() doesn't need to know which.
+   * Low-confidence rows are excluded before any of this ever sees them (see
+   * confidenceFilteredResults()) — a bus left with zero usable rows simply
+   * gets no perOutput/delays entry, so apply() silently skips it rather than
+   * writing a correction built from noise.
    */
   buildRecommendations() {
     const g = this.cfg.guardrails;
     const perOutput = {};
+    const usable = this.confidenceFilteredResults();
+    const excludedLowConfidenceCount = this.results.length - usable.length;
+    const busesWithNoUsableData = [];
 
     for (const bus of this.cfg.buses) {
-      const rs = this.results.filter((r) => r.outputId === bus.id);
-      if (!rs.length) continue;
+      const rs = usable.filter((r) => r.outputId === bus.id);
+      if (!rs.length) {
+        if (this.results.some((r) => r.outputId === bus.id)) busesWithNoUsableData.push(bus.label);
+        continue;
+      }
 
       const grid = rs[0].freqs;
       const weighted = rs.filter((r) => r.positionWeight > 0);
@@ -656,10 +686,15 @@ export class TuneSession {
     }
 
     const delays = recommendDelays({
-      results: this.results, outputs: this.cfg.buses, guardrails: this.cfg.guardrails
+      results: usable, outputs: this.cfg.buses, guardrails: this.cfg.guardrails
     });
     const zoneReport = this.buildZoneReport();
-    return { perOutput, delays, zoneReport, driverHealth: this.driverHealthReports.length ? this.driverHealthReports : null, applied: false };
+    return {
+      perOutput, delays, zoneReport,
+      driverHealth: this.driverHealthReports.length ? this.driverHealthReports : null,
+      excludedLowConfidenceCount, busesWithNoUsableData,
+      applied: false
+    };
   }
 
 

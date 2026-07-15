@@ -496,6 +496,12 @@ function renderReview(){
   let head = `<div class="card"><h2>Tuning</h2><p style="margin:0 0 6px">${src}</p>`;
   if (rec.summary) head += `<p style="color:var(--dim);font-size:14px;margin:0">${rec.summary}</p>`;
   if (rec.warnings?.length) head += rec.warnings.map(w=>`<p class="warn" style="font-size:13px;margin:8px 0 0">⚠ ${w}</p>`).join('');
+  if (rec.excludedLowConfidenceCount) {
+    head += `<p class="warn" style="font-size:13px;margin:8px 0 0">⚠ ${rec.excludedLowConfidenceCount} measurement(s) excluded from this correction — confidence stayed low even after retry.</p>`;
+  }
+  if (rec.busesWithNoUsableData?.length) {
+    head += `<p class="warn" style="font-size:13px;margin:8px 0 0">⚠ No correction generated for: ${rec.busesWithNoUsableData.join(', ')} — every measurement was low-confidence. Retake when quieter.</p>`;
+  }
   head += `<p style="color:var(--dim);font-size:12px;margin:10px 0 0"><a href="/analysis.json" style="color:var(--blue)" target="_blank">export raw analysis</a></p></div>`;
   el.insertAdjacentHTML('beforeend', head);
 

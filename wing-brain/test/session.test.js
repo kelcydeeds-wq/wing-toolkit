@@ -293,3 +293,80 @@ test('preflightCheck refuses to run while a session is already in progress', asy
   session.start('verify'); // state -> waiting_position
   await assert.rejects(() => session.preflightCheck(), /cannot pre-flight while a session is running/);
 });
+
+/* -------------------- low-confidence exclusion from correction -------------------- */
+// A 300-500ms "delay" is not physically plausible for a real room -- it's the
+// signature of findDelay() locking onto noise instead of a real correlation
+// peak (its search window defaults to 500ms). The system already warns on
+// this; these tests cover the harder guarantee: a low-confidence reading can
+// never make it into what apply() actually writes to the console.
+
+test('a low-confidence measurement is excluded from the correction, but stays in the raw session record', async () => {
+  const audio = { playAndCapture: async () => noiseCapture() }; // always noisy -> stays low-confidence after retry
+  const session = newSession({ config: oneOutputConfig(), room, audio, wing: fakeWing(), emit: () => {} });
+  session.start('full');
+  await session.ready(); // one position measured
+
+  assert.equal(session.results.length, 1, 'the raw (untrusted) measurement is still recorded');
+  const rec = session.buildRecommendations();
+  assert.equal(rec.perOutput.sub, undefined, 'no correction built for a bus whose only data point was low-confidence');
+  assert.equal(rec.excludedLowConfidenceCount, 1);
+  assert.deepEqual(rec.busesWithNoUsableData, ['Sub']);
+});
+
+test('one low-confidence position among several does not block a bus that has other good data', async () => {
+  // Branch on which POSITION is being measured (not a raw call counter --
+  // the low-confidence retry itself adds a second playAndCapture call within
+  // the same position, so a naive "first call is noisy" mock would let the
+  // retry quietly rescue position 1 instead of keeping it genuinely noisy).
+  let pos = 0;
+  const audio = { playAndCapture: async () => (pos === 0 ? noiseCapture() : cleanCapture(20)) };
+  const session = newSession({ config: oneOutputConfig(), room, audio, wing: fakeWing(), emit: () => {} });
+  session.start('full');
+  await session.ready(); // position 0: noisy on both the initial try and the retry
+  pos = 1;
+  await session.ready(); // position 1: clean
+
+  const rec = session.buildRecommendations();
+  assert.ok(rec.perOutput.sub, 'the bus still gets a correction from its one good measurement');
+  assert.equal(rec.excludedLowConfidenceCount, 1);
+  assert.deepEqual(rec.busesWithNoUsableData, []);
+});
+
+test('finish() warns about excluded measurements and buses left with no usable data', async () => {
+  const audio = { playAndCapture: async () => noiseCapture() };
+  const log = [];
+  const session = newSession({
+    config: oneOutputConfig(), room: { ...room, positions: room.positions.filter((p) => p.id === room.verifyPosition) },
+    audio, wing: fakeWing(), emit: (event, payload) => log.push({ event, payload })
+  });
+  session.start('full');
+  await session.ready(); // last position -> finish() runs automatically
+
+  assert.ok(log.some((e) => e.event === 'warning' && /excluded from correction/.test(e.payload.message)));
+  assert.ok(log.some((e) => e.event === 'warning' && /Sub: every measurement/.test(e.payload.message)));
+});
+
+test('recommendDelays only ever sees confidence-filtered rows (a noisy reading cannot skew the bus delay average)', async () => {
+  // Branch on which POSITION is being measured, not a raw call counter --
+  // the retry adds a second call within position 0, which would otherwise
+  // rescue it back to clean and defeat the point of this test.
+  let pos = 0;
+  // Position 0 noisy (would-be bogus delay near the 500ms search ceiling if
+  // it were allowed through), positions 1-2 clean 20ms-delay readings.
+  const audio = { playAndCapture: async () => (pos === 0 ? noiseCapture() : cleanCapture(20)) };
+  const session = newSession({ config: oneOutputConfig(), room, audio, wing: fakeWing(), emit: () => {} });
+  session.start('full');
+  await session.ready(); pos = 1;
+  await session.ready(); pos = 2;
+  await session.ready();
+
+  const rec = session.buildRecommendations();
+  assert.equal(rec.excludedLowConfidenceCount, 1, 'the noisy position should have been excluded');
+  // measuredMs is the averaged arrival time that fed the alignment math --
+  // if the noisy reading had leaked in, this would be dragged toward
+  // wherever its noise-driven correlation peak landed (up to ~500ms).
+  // With only the clean 20ms readings, it should sit right at ~20ms.
+  assert.ok(Math.abs(rec.delays.sub.measuredMs - 20) < 2,
+    `measuredMs should reflect only the clean ~20ms measurements, got ${rec.delays.sub.measuredMs}ms`);
+});
