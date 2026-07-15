@@ -362,6 +362,9 @@ export function validateSpeakersArray(speakers, room) {
       bad(`${at}.z: must be a number 0-${MAX_Z_M} (meters)`);
     }
     if (s?.note !== undefined && typeof s.note !== 'string') bad(`${at}.note: must be a string`);
+    if (s?.needsPositioning !== undefined && typeof s.needsPositioning !== 'boolean') {
+      bad(`${at}.needsPositioning: must be a boolean`);
+    }
   });
   return errors;
 }

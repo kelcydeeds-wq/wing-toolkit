@@ -3,7 +3,46 @@
 Running log of judgment calls made during autonomous work runs, so they can be
 reviewed and reversed if wrong.
 
-## 2026-07-15 — visual speaker/output editor, Stage 4: per-icon settings panel
+## 2026-07-15 — visual speaker/output editor, Stage 5: discovery-to-speaker flow
+
+Final stage: `POST /api/discover-outputs` rows that don't match an existing
+`config.buses[]` entry now get an "Add as speaker" button in the Settings
+page's discovery table instead of just a passive row for manual
+cross-referencing.
+
+- **Discovered-row-vs-`config.buses` matching is `wing.type`+`wing.num`
+  equality, normalized for a real naming mismatch found while smoke-testing**:
+  `identifyOutputs()`/`wing-schema.mjs`'s `strip.kind` is `'main'|'matrix'`,
+  but `config.buses[].wing.type` (every bus in `config/default.json`, and the
+  OSC address map in `CLAUDE.md`) is `'main'|'mtx'`. Comparing the raw kind
+  strings would have marked every real matrix bus (`side_fills`,
+  `center_fill`) as falsely "unmatched" on every discovery run. `index.html`'s
+  `btnDiscoverOutputs` handler normalizes `'matrix'` → `'mtx'` before
+  comparing (and before using it as `wingOverride.type`), confirmed against
+  the mock seed (`scripts/identify-outputs.mjs`'s `seedMockOutputs()`) live.
+- **`needsPositioning` (new optional boolean on `room.speakers[]` entries,
+  validated in `src/config/settings.js`'s `validateSpeakersArray`) is
+  deliberately independent of the physical output's `enabled` flag.** A
+  discovered add sets `needsPositioning: true` on the speaker AND
+  `enabled: false` on the new physical output — positioning (dragging) and
+  activating (the existing toggle/gear panel) are two separate deliberate
+  user actions, per spec. `commitRoomDrag()` clears `needsPositioning` by
+  dropping the key entirely (not writing `false`) in the same `PUT` that
+  saves the drag's x/y — one write, matching the codebase's existing
+  undefined-means-off convention (`physicalOutputs[].enabled`). It does NOT
+  touch `enabled` — a user can drag a still-disabled speaker into place and
+  enable it separately, or vice versa.
+- **Default placement is the room's geometric center** (reusing
+  `roomProjection()`'s wall-bbox math, factored out into `roomWallBbox()` so
+  the two call sites can't drift apart), offset `+0.5m` in x per existing
+  `needsPositioning:true` speaker so repeated discovery-adds before any
+  dragging don't stack exactly on top of each other.
+- **The discovery "Add as speaker" flow reuses the Stage 3 add-mode UI**
+  (`roomAddMode`/`renderRoomAddPanel`/`createRoomSpeaker`) rather than native
+  `prompt()` dialogs — it jumps straight to the "placed" step (skipping the
+  map-tap) with `x`/`y` pre-computed and the label input pre-filled from the
+  console's discovered name, keeping one code path for both flows instead of
+  a second one-off form.
 
 Stage 4 of the 5-stage feature: a gear glyph on every speaker/position icon
 on the Settings page's interactive Room map, opening an inline settings

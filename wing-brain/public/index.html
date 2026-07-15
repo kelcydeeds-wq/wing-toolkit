@@ -614,18 +614,35 @@ function renderVerify(){
  * math (and its inverse, for drag release) never drifts out of sync.
  * Mirrors roomBounds()'s bbox math in src/config/settings.js.
  */
-function roomProjection(rm, cv){
-  const W = cv.width, H = cv.height, PAD = 14;
+/** Room walls' bounding box -- factored out of roomProjection() so the
+ *  discovery-flow default-placement math (roomDiscoveryDefaultPos(), Stage 5)
+ *  reuses the exact same bbox instead of a second hand-copied version that
+ *  could drift out of sync. Mirrors roomBounds() in src/config/settings.js. */
+function roomWallBbox(rm){
   const pts = rm.walls || [[0,0],[rm.width,0],[rm.width,rm.depth],[0,rm.depth]];
   const xs = pts.map(p=>p[0]), ys = pts.map(p=>p[1]);
-  const minX = Math.min(...xs), maxX = Math.max(...xs);
-  const minY = Math.min(...ys), maxY = Math.max(...ys);
+  return { pts, minX: Math.min(...xs), maxX: Math.max(...xs), minY: Math.min(...ys), maxY: Math.max(...ys) };
+}
+
+function roomProjection(rm, cv){
+  const W = cv.width, H = cv.height, PAD = 14;
+  const { pts, minX, maxX, minY, maxY } = roomWallBbox(rm);
   const s = Math.min((W-2*PAD)/(maxX-minX), (H-2*PAD)/(maxY-minY));
   return {
     pts, minX, maxX, minY, maxY, s, PAD,
     X: (x)=>PAD+(x-minX)*s, Y: (y)=>PAD+(y-minY)*s,
     invX: (px)=>minX+(px-PAD)/s, invY: (py)=>minY+(py-PAD)/s
   };
+}
+
+/** Default placement for a newly discovered speaker (Stage 5): the room's
+ *  geometric center, offset +0.5m in x per speaker that already has
+ *  needsPositioning:true (undragged) so multiple discovered adds don't stack
+ *  exactly on top of each other and become impossible to tap individually. */
+function roomDiscoveryDefaultPos(rm){
+  const { minX, maxX, minY, maxY } = roomWallBbox(rm);
+  const offsetCount = (rm.speakers || []).filter((s) => s.needsPositioning === true).length;
+  return { x: (minX + maxX) / 2 + offsetCount * 0.5, y: (minY + maxY) / 2 };
 }
 
 /** Walls/stage/balcony/booth — the static backdrop shared by every room
@@ -802,6 +819,28 @@ function drawRoomInteractive(cv){
     const gearActive = roomGearPanel?.kind === 'speaker' && roomGearPanel.id === sp.id;
     drawGearGlyph(ctx, gx, gy, gearActive);
     roomEditGearTargets.push({ kind: 'speaker', id: sp.id, cx: gx, cy: gy });
+
+    // Stage 5: needsPositioning speakers (freshly created from discovery,
+    // never dragged) get an unmissable dashed amber ring + "!" badge + label
+    // -- distinct from both the normal look and the dimmed/disabled look
+    // above, since the whole point is the user notices and drags it.
+    if (sp.needsPositioning === true) {
+      ctx.save();
+      ctx.strokeStyle = '#ffb454';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([4, 3]);
+      ctx.beginPath(); ctx.arc(x, y, 18, 0, Math.PI*2); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = '#ffb454';
+      ctx.beginPath(); ctx.arc(x, y+6, 6, 0, Math.PI*2); ctx.fill();
+      ctx.fillStyle = '#0c0e10';
+      ctx.font = 'bold 9px ui-monospace';
+      ctx.fillText('!', x-1.5, y+9);
+      ctx.fillStyle = '#ffb454';
+      ctx.font = 'bold 11px ui-monospace';
+      ctx.fillText('needs positioning', x+20, y+20);
+      ctx.restore();
+    }
   }
 
   for (const p of R.positions || []) {
@@ -865,9 +904,15 @@ async function commitRoomDrag(kind, id, x, y){
   const { x: cx, y: cy } = clampToRoomBounds(x, y, R);
   if (cx === orig.x && cy === orig.y) return; // tap without an actual move -- nothing to save
   const url = `/api/${kind === 'speaker' ? 'speakers' : 'positions'}/${encodeURIComponent(id)}`;
+  // A successful drag is the user's confirmation the speaker's now at its
+  // real position -- clear needsPositioning (Stage 5) in this SAME PUT, not
+  // a second write. Drop the key entirely (undefined-means-false/absent, same
+  // convention as physicalOutputs[].enabled) rather than writing `false`.
+  const nextBody = { ...orig, x: cx, y: cy };
+  if (kind === 'speaker' && nextBody.needsPositioning) delete nextBody.needsPositioning;
   try {
     const res = await fetch(url, {
-      method: 'PUT', headers: {'content-type':'application/json'}, body: JSON.stringify({ ...orig, x: cx, y: cy })
+      method: 'PUT', headers: {'content-type':'application/json'}, body: JSON.stringify(nextBody)
     });
     const body = await res.json();
     if (!res.ok) {
@@ -1064,8 +1109,10 @@ function renderRoomAddPanel(){
     return;
   }
 
+  const disc = roomAddMode.discovery; // Stage 5: set when this add was launched from a discovery row
   panel.innerHTML = `
-    <div class="frow"><label>Label</label><input type="text" id="addSpLabel" placeholder="e.g. Balcony Rail L"></div>
+    ${disc ? `<p class="hint">Discovered on the console as ${esc(disc.type)} ${disc.num}${disc.name ? ` ("${esc(disc.name)}")` : ''} — placed at the room's center for now. Drag it to its real position once you confirm what it is; its output starts disabled.</p>` : ''}
+    <div class="frow"><label>Label</label><input type="text" id="addSpLabel" placeholder="e.g. Balcony Rail L" value="${esc(disc?.name || '')}"></div>
     <div class="frow"><label>Type</label><select id="addSpRole">
       <option value="main">main</option><option value="sub">sub</option><option value="fill">fill</option>
     </select></div>
@@ -1076,7 +1123,9 @@ function renderRoomAddPanel(){
       <button class="small" id="btnAddCreate">Create</button>
     </div>`;
   $('btnAddCancel').onclick = () => setRoomAddMode(null);
-  $('btnAddCreate').onclick = () => createRoomSpeaker(roomAddMode.x, roomAddMode.y);
+  $('btnAddCreate').onclick = () => createRoomSpeaker(roomAddMode.x, roomAddMode.y, disc
+    ? { wingOverride: { type: disc.type, num: disc.num }, needsPositioning: true, outputEnabled: false }
+    : {});
 }
 
 /** Create one room.positions[] entry via PUT /api/positions/:id. On failure,
@@ -1103,8 +1152,18 @@ async function createRoomPosition(x, y) {
  *  triplet for a new speaker, in that dependency order (speaker has no
  *  references to satisfy; the output references both the bus and the
  *  speaker). No cross-endpoint transaction -- if a later call fails, say
- *  exactly which of the three succeeded rather than pretending it's atomic. */
-async function createRoomSpeaker(x, y) {
+ *  exactly which of the three succeeded rather than pretending it's atomic.
+ *
+ *  `opts` (Stage 5, used by the discovery-row "Add as speaker" flow) lets a
+ *  caller override the parts discovery already knows instead of guessing:
+ *    - wingOverride: {type, num} -- the REAL discovered bus number, skipping
+ *      nextWingNum()'s "pick next unused" default (only right for manual adds).
+ *    - needsPositioning: true -- flags the new speaker (dropped, not stored
+ *      as false) so drawRoomInteractive() flags it until the user drags it.
+ *    - outputEnabled: false -- discovery confirms the bus EXISTS on the
+ *      console, not that this speaker/role/position mapping is correct, so
+ *      the output starts disabled regardless of wing.confirmed. */
+async function createRoomSpeaker(x, y, opts = {}) {
   const label = $('addSpLabel').value.trim();
   const role = $('addSpRole').value;
   if (!label) return showRoomAddError('Label is required.');
@@ -1113,15 +1172,19 @@ async function createRoomSpeaker(x, y) {
   const busId = uniqueId(base, new Set(appConfig.config.buses.map((b) => b.id)));
   const outputId = uniqueId(`${base}_out`, new Set(appConfig.config.physicalOutputs.map((o) => o.id)));
 
+  const wingType = opts.wingOverride?.type ?? ROLE_WING_TYPE[role];
+  const wingNum = opts.wingOverride?.num ?? nextWingNum(appConfig.config.buses, wingType);
+
   const speaker = { id: speakerId, x, y, z: 1.2 };
+  if (opts.needsPositioning) speaker.needsPositioning = true;
   const bus = {
     id: busId, label, role, stereo: false,
-    wing: { type: ROLE_WING_TYPE[role], num: nextWingNum(appConfig.config.buses, ROLE_WING_TYPE[role]), confirmed: false },
+    wing: { type: wingType, num: wingNum, confirmed: false },
     band: ROLE_BAND[role], sweepTrimDb: 0
   };
   const output = {
     id: outputId, label, sourceBusId: busId, side: 'mono', speakerId,
-    enabled: true, wing: { grp: null, num: null, confirmed: false }
+    enabled: opts.outputEnabled ?? true, wing: { grp: null, num: null, confirmed: false }
   };
 
   const put = async (url, obj) => {
@@ -2000,12 +2063,40 @@ function renderSettings(){
       const answered = body.rows.filter((r) => r.name !== null);
       out.style.color = answered.length ? 'var(--green)' : 'var(--amber)';
       out.textContent = `${answered.length}/${body.rows.length} answered`;
+
+      // Stage 5: a row is "unmatched" when no config.buses[] entry already
+      // claims this exact console bus (type+num) -- those rows get a
+      // highlighted row + "Add as speaker" button instead of just the passive
+      // manual-cross-reference hint every row got before this stage.
+      // NOTE: identifyOutputs()/wing-schema.mjs's strip.kind is 'main'|'matrix'
+      // (confirmed by hitting the mock endpoint), but config.buses[].wing.type
+      // is 'main'|'mtx' (see CLAUDE.md's OSC address map + every bus in
+      // config/default.json) -- normalize 'matrix'->'mtx' or every real matrix
+      // bus would show up as a false "unmatched" row.
+      const C = appConfig.config;
+      const rowWingType = (r) => (r.kind === 'matrix' ? 'mtx' : r.kind);
+      const isMatched = (r) => (C.buses || []).some((b) => b.wing?.type === rowWingType(r) && b.wing?.num === r.index);
+      const rowsHtml = body.rows.map((r) => {
+        const matched = isMatched(r);
+        const addBtn = matched ? '' :
+          `<button class="small secondary" data-add-discovered data-kind="${esc(rowWingType(r))}" data-index="${r.index}" data-name="${r.name != null ? esc(r.name) : ''}">Add as speaker</button>`;
+        return `<tr${matched ? '' : ' class="warn"'}><td>${r.kind}</td><td class="num">${r.index}</td>
+          <td>${esc(r.name ?? '(no reply)')}</td><td>${r.mute===null?'?':(r.mute?'muted':'live')}</td><td>${addBtn}</td></tr>`;
+      }).join('');
       $('discoverySuggestions').innerHTML = `<table style="margin-top:10px">
-        <tr><th>Kind</th><th>#</th><th>Console name</th><th>Mute</th></tr>
-        ${body.rows.map((r) => `<tr><td>${r.kind}</td><td class="num">${r.index}</td>
-          <td>${esc(r.name ?? '(no reply)')}</td><td>${r.mute===null?'?':(r.mute?'muted':'live')}</td></tr>`).join('')}
+        <tr><th>Kind</th><th>#</th><th>Console name</th><th>Mute</th><th></th></tr>
+        ${rowsHtml}
       </table>
-      <p class="hint">Match these names against your bus labels above, then hand-set each bus's Type/# to match and check "OK?" once confirmed. This does not auto-fill — review before trusting it.</p>`;
+      <p class="hint">Match these names against your bus labels above, then hand-set each bus's Type/# to match and check "OK?" once confirmed. This does not auto-fill for rows that already have a matching bus. Highlighted rows have no matching bus yet — "Add as speaker" creates a new speaker+bus+output pre-filled with the discovered routing, positioned at the room's center and flagged for you to drag into place and review before enabling.</p>`;
+      document.querySelectorAll('#discoverySuggestions [data-add-discovered]').forEach((btn) => {
+        btn.onclick = () => {
+          const pos = roomDiscoveryDefaultPos(appConfig.room);
+          setRoomAddMode({
+            kind: 'speaker', placed: true, x: pos.x, y: pos.y,
+            discovery: { type: btn.dataset.kind, num: Number(btn.dataset.index), name: btn.dataset.name || null }
+          });
+        };
+      });
     } catch (err) { out.style.color = 'var(--red)'; out.textContent = String(err); }
   };
 
