@@ -3,6 +3,39 @@
 Running log of judgment calls made during autonomous work runs, so they can be
 reviewed and reversed if wrong.
 
+## 2026-07-15 — visual speaker/output editor, Stage 3: add mode
+
+Stage 3 of the 5-stage feature: a "+ Add" control on the Settings page's
+Room card. Tap it, pick Speaker or Position, tap the map to place it, fill
+a small inline form, and it's written via the Stage 1 `PUT` endpoints.
+Deletion stays out of scope (Stage 4).
+
+- **Adding a speaker creates a full speaker + bus + physicalOutput triplet,
+  not just a bare `room.speakers[]` point.** A bare geometry point has
+  nowhere to hang role/routing/band — those live on `config.buses[]` +
+  `config.physicalOutputs[]`. Dropping a pin with no bus/output would be a
+  dead end (not selectable in a Full Tune, no EQ target). Instead the add
+  flow writes all three, with `wing.confirmed: false` on both the new bus
+  and output (same "unconfirmed, needs a human to check the real console
+  routing" pattern already used everywhere else in this config) — the user
+  still has to go confirm the real Wing numbers, but gets an immediately
+  usable, positioned starting point instead of hand-editing JSON.
+- **Id-slugging**: one shared slug from the label (lowercase,
+  non-alphanumeric → `_`, collapsed/trimmed), disambiguated separately
+  against each of the three id namespaces (`room.speakers`, `config.buses`,
+  `config.physicalOutputs` each own their id space) by appending `_2`,
+  `_3`, ... on collision. The physicalOutput reuses the same base with an
+  `_out` suffix, mirroring the shipped `main_l_out`/`sub_out` convention.
+  Deterministic, not random, so retrying after a partial failure produces
+  the same ids rather than orphaning half-written data under a new name.
+- **No cross-endpoint transaction.** The three `PUT`s run sequentially
+  (speaker, then bus, then output — output validation needs the other two
+  to already exist) and a failure partway through is reported honestly
+  ("speaker saved, bus failed" etc.) rather than pretending the whole
+  triplet is atomic. Acceptable limitation for a tool with no DB
+  transactions to lean on; the user can retry the failed leg by hand via
+  the raw-JSON editor.
+
 ## 2026-07-15 — visual speaker/output editor, Stage 2: interactive canvas
 
 Stage 2 of the 5-stage feature: made the room map on the Settings page's

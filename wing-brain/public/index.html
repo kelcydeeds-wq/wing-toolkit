@@ -715,6 +715,11 @@ let roomEditDrag = null;             // { kind, id, curX, curY, pointerId } worl
 let roomEditHitTargets = [];         // [{kind,id,cx,cy,r}] rebuilt every draw, canvas-space px
 let roomEditToggleTargets = [];      // [{kind,id,output?,cx,cy}] same
 
+// Add-mode state (Stage 3), null when inactive. { kind: null } = "+" tapped,
+// choosing speaker/position. { kind, placed:false } = type chosen, waiting
+// for a map tap. { kind, placed:true, x, y } = tapped, form showing.
+let roomAddMode = null;
+
 /** A speaker's on/off state lives on whichever physicalOutput references it
  *  (directly via speakerId, or via a shared-driver's drivers[].speakerId --
  *  both driver icons of a shared output resolve to that SAME output). Null
@@ -880,6 +885,18 @@ function wireRoomEditor(cv){
 
   cv.addEventListener('pointerdown', (e) => {
     const pt = canvasPointFromEvent(cv, e);
+
+    // Add mode (Stage 3): once a type is chosen, the next tap places the new
+    // entity instead of starting a drag or hitting an existing icon/toggle --
+    // checked first, ahead of every other branch below.
+    if (roomAddMode && roomAddMode.kind && !roomAddMode.placed) {
+      e.preventDefault();
+      const proj = roomProjection(appConfig.room, cv);
+      const { x, y } = clampToRoomBounds(proj.invX(pt.x), proj.invY(pt.y), appConfig.room);
+      setRoomAddMode({ ...roomAddMode, placed: true, x, y });
+      return;
+    }
+
     const toggle = roomEditToggleTargets.find((t) => Math.hypot(t.cx-pt.x, t.cy-pt.y) <= 11);
     if (toggle) {
       e.preventDefault();
@@ -916,6 +933,183 @@ function wireRoomEditor(cv){
   };
   cv.addEventListener('pointerup', endDrag);
   cv.addEventListener('pointercancel', endDrag);
+}
+
+/* ---------- interactive room editor: add mode (Stage 3) ---------- */
+// "+ Add" enters add mode: pick speaker/position, tap the map to place it,
+// then fill a small inline form (not a chain of native prompts) before
+// anything is written. Exits back to inactive after a successful create, a
+// Cancel, or tapping "+ Add" again mid-flow. See wireRoomEditor() above for
+// where the placement tap is intercepted ahead of drag/toggle hit-testing.
+
+/** lowercase, non-alphanumeric -> _, collapse/trim -- same shape as every
+ *  other hand-written id in config/room.json and config/default.json. */
+function slugify(label) {
+  const s = String(label || '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+  return s || 'item';
+}
+
+/** Disambiguate `base` against an id Set by appending _2, _3, ... */
+function uniqueId(base, existingIds) {
+  if (!existingIds.has(base)) return base;
+  let n = 2;
+  while (existingIds.has(`${base}_${n}`)) n++;
+  return `${base}_${n}`;
+}
+
+// Defaults by bus role, copied from the existing mains/sub/center_fill
+// entries in config/default.json (not invented) -- see docs/DECISIONS.md.
+const ROLE_BAND = { main: [40, 16000], sub: [25, 120], fill: [80, 16000] };
+const ROLE_WING_TYPE = { main: 'main', sub: 'main', fill: 'mtx' };
+
+/** Next unused bus.wing.num for a wing.type ("main"/"mtx") -- a helpful
+ *  default only; wing.confirmed on the new bus is always false regardless. */
+function nextWingNum(buses, type) {
+  const used = new Set((buses || []).filter((b) => b.wing?.type === type).map((b) => b.wing.num));
+  let n = 1;
+  while (used.has(n)) n++;
+  return n;
+}
+
+function setRoomAddMode(next) {
+  roomAddMode = next;
+  const btn = $('btnRoomAddToggle');
+  if (btn) btn.className = `small ${roomAddMode ? 'amber' : 'secondary'}`;
+  renderRoomAddPanel();
+  const cv = $('roomMapEdit');
+  if (cv) drawRoomInteractive(cv);
+}
+
+function showRoomAddError(msg) {
+  const el = $('addRoomError');
+  if (el) { el.textContent = msg; el.style.display = ''; }
+  showToast(msg, 'warn');
+}
+
+/** Rebuilds #roomAddPanel for the current roomAddMode and wires whatever it
+ *  just drew. Called on every add-mode state change instead of a full
+ *  renderSettings() so the rest of the Settings page (dirty tracking, other
+ *  cards' inputs) is left untouched. */
+function renderRoomAddPanel(){
+  const panel = $('roomAddPanel');
+  if (!panel) return;
+  if (!roomAddMode) { panel.innerHTML = ''; return; }
+
+  if (!roomAddMode.kind) {
+    panel.innerHTML = `<div class="frow" style="gap:8px">
+      <button class="small secondary" id="btnAddKindSpeaker">Speaker</button>
+      <button class="small secondary" id="btnAddKindPosition">Position</button>
+    </div>`;
+    $('btnAddKindSpeaker').onclick = () => setRoomAddMode({ kind: 'speaker', placed: false });
+    $('btnAddKindPosition').onclick = () => setRoomAddMode({ kind: 'position', placed: false });
+    return;
+  }
+
+  if (!roomAddMode.placed) {
+    panel.innerHTML = `<p class="hint">Tap the map to place the new ${esc(roomAddMode.kind)}.</p>`;
+    return;
+  }
+
+  if (roomAddMode.kind === 'position') {
+    panel.innerHTML = `
+      <div class="frow"><label>Label</label><input type="text" id="addPosLabel" placeholder="e.g. Front Center"></div>
+      <div class="frow"><label>Zone</label><select id="addPosZone">
+        <option value="main">main</option><option value="balcony">balcony</option><option value="under_balcony">under_balcony</option>
+      </select></div>
+      <p id="addRoomError" class="hint warn" style="display:none"></p>
+      <div class="cardfoot">
+        <button class="small secondary" id="btnAddCancel">Cancel</button>
+        <button class="small" id="btnAddCreate">Create</button>
+      </div>`;
+    $('btnAddCancel').onclick = () => setRoomAddMode(null);
+    $('btnAddCreate').onclick = () => createRoomPosition(roomAddMode.x, roomAddMode.y);
+    return;
+  }
+
+  panel.innerHTML = `
+    <div class="frow"><label>Label</label><input type="text" id="addSpLabel" placeholder="e.g. Balcony Rail L"></div>
+    <div class="frow"><label>Type</label><select id="addSpRole">
+      <option value="main">main</option><option value="sub">sub</option><option value="fill">fill</option>
+    </select></div>
+    <p class="hint">Creates a positioned speaker plus a matching bus + physical output, marked unconfirmed until you set its real console routing.</p>
+    <p id="addRoomError" class="hint warn" style="display:none"></p>
+    <div class="cardfoot">
+      <button class="small secondary" id="btnAddCancel">Cancel</button>
+      <button class="small" id="btnAddCreate">Create</button>
+    </div>`;
+  $('btnAddCancel').onclick = () => setRoomAddMode(null);
+  $('btnAddCreate').onclick = () => createRoomSpeaker(roomAddMode.x, roomAddMode.y);
+}
+
+/** Create one room.positions[] entry via PUT /api/positions/:id. On failure,
+ *  show the error inline and leave the form open (with roomAddMode still
+ *  "placed") so the user can fix the fields and retry without re-tapping. */
+async function createRoomPosition(x, y) {
+  const label = $('addPosLabel').value.trim();
+  const zone = $('addPosZone').value;
+  if (!label) return showRoomAddError('Label is required.');
+  const id = uniqueId(slugify(label), new Set(appConfig.room.positions.map((p) => p.id)));
+  const body = { id, label, zone, x, y, z: 1.2, weight: 1 };
+  try {
+    const res = await fetch(`/api/positions/${encodeURIComponent(id)}`, {
+      method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body)
+    });
+    const respBody = await res.json();
+    if (!res.ok) return showRoomAddError(respBody.errors ? respBody.errors.join(' · ') : (respBody.error || `HTTP ${res.status}`));
+    showToast(`Added position "${label}"`, 'ok');
+    setRoomAddMode(null);
+  } catch (err) { showRoomAddError(String(err)); }
+}
+
+/** Create the room.speakers[] + config.buses[] + config.physicalOutputs[]
+ *  triplet for a new speaker, in that dependency order (speaker has no
+ *  references to satisfy; the output references both the bus and the
+ *  speaker). No cross-endpoint transaction -- if a later call fails, say
+ *  exactly which of the three succeeded rather than pretending it's atomic. */
+async function createRoomSpeaker(x, y) {
+  const label = $('addSpLabel').value.trim();
+  const role = $('addSpRole').value;
+  if (!label) return showRoomAddError('Label is required.');
+  const base = slugify(label);
+  const speakerId = uniqueId(base, new Set(appConfig.room.speakers.map((s) => s.id)));
+  const busId = uniqueId(base, new Set(appConfig.config.buses.map((b) => b.id)));
+  const outputId = uniqueId(`${base}_out`, new Set(appConfig.config.physicalOutputs.map((o) => o.id)));
+
+  const speaker = { id: speakerId, x, y, z: 1.2 };
+  const bus = {
+    id: busId, label, role, stereo: false,
+    wing: { type: ROLE_WING_TYPE[role], num: nextWingNum(appConfig.config.buses, ROLE_WING_TYPE[role]), confirmed: false },
+    band: ROLE_BAND[role], sweepTrimDb: 0
+  };
+  const output = {
+    id: outputId, label, sourceBusId: busId, side: 'mono', speakerId,
+    enabled: true, wing: { grp: null, num: null, confirmed: false }
+  };
+
+  const put = async (url, obj) => {
+    const res = await fetch(url, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(obj) });
+    const body = await res.json();
+    return { ok: res.ok, body };
+  };
+  const errText = (body) => (body.errors ? body.errors.join(' · ') : (body.error || 'unknown error'));
+
+  try {
+    const spRes = await put(`/api/speakers/${encodeURIComponent(speakerId)}`, speaker);
+    if (!spRes.ok) return showRoomAddError(`Speaker create failed: ${errText(spRes.body)}`);
+
+    const busRes = await put(`/api/buses/${encodeURIComponent(busId)}`, bus);
+    if (!busRes.ok) {
+      return showRoomAddError(`Speaker "${speakerId}" saved, but bus create failed: ${errText(busRes.body)} — the new speaker point has no bus yet.`);
+    }
+
+    const outRes = await put(`/api/outputs/${encodeURIComponent(outputId)}`, output);
+    if (!outRes.ok) {
+      return showRoomAddError(`Speaker "${speakerId}" and bus "${busId}" saved, but output create failed: ${errText(outRes.body)} — finish wiring the physical output by hand.`);
+    }
+
+    showToast(`Added speaker "${label}" (bus "${busId}", output "${outputId}")`, 'ok');
+    setRoomAddMode(null);
+  } catch (err) { showRoomAddError(String(err)); }
 }
 
 function renderPosList(){
@@ -1247,11 +1441,16 @@ function renderSettings(){
     <div class="card">
       <h2>Room</h2>
       <canvas id="roomMapEdit" width="560" height="380"></canvas>
+      <div class="frow">
+        <label>Add to map</label>
+        <button class="small secondary" id="btnRoomAddToggle" style="flex:0 0 auto">+ Add</button>
+      </div>
+      <div id="roomAddPanel"></div>
       <p class="hint">Drag a speaker (triangle) or measurement position (circle) to reposition it — saves on release. Tap the small checkbox next to an icon to enable/disable it (dimmed = disabled). Disabled positions are skipped during Full Tune; disabled speakers' outputs are skipped everywhere.</p>
       ${frow('Verify position', `<select id="set_verify_pos">${R.positions.map((p) =>
         `<option value="${esc(p.id)}" ${p.id === R.verifyPosition ? 'selected' : ''}>${esc(p.label)}</option>`).join('')}</select>`)}
       <p class="hint">${esc(R.name)} · ${R.width} m wide · ${R.positions.length} positions · ${(R.speakers || []).length} speakers</p>
-      <p class="hint">Adding/removing speakers or positions, and full geometry edits, are still config/room.json-only for now (a later stage adds that UI).</p>
+      <p class="hint">Deleting speakers/positions and per-item routing details are still config-file-only for now (a later stage adds that UI).</p>
       <div class="cardfoot"><button class="small" id="save_room" disabled>Save</button></div>
     </div>
 
@@ -1289,6 +1488,14 @@ function renderSettings(){
   });
   $('set_verify_pos').addEventListener('change', () => markDirty('room'));
   { const roomEditCv = $('roomMapEdit'); if (roomEditCv) { wireRoomEditor(roomEditCv); drawRoomInteractive(roomEditCv); } }
+  {
+    const btn = $('btnRoomAddToggle');
+    if (btn) {
+      btn.onclick = () => setRoomAddMode(roomAddMode ? null : { kind: null });
+      btn.className = `small ${roomAddMode ? 'amber' : 'secondary'}`;
+    }
+    renderRoomAddPanel();
+  }
   $('set_rawjson').addEventListener('input', () => markDirty('raw'));
   wire('loudness', ['lm_enabled', 'lm_pos', 'lm_target', 'lm_soft', 'lm_hard', 'lm_sustained', 'lm_window', 'lm_quiet_on', 'lm_quiet']);
   $('lm_pos').addEventListener('change', () => markDirty('loudness'));
