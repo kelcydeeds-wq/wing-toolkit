@@ -31,7 +31,8 @@
 import { makeESS, makeBlip, scaleBuffer, extractIR, findDelay, magnitudeResponse,
          polarity, rmsDbfs, isClipped, estimateSnrDb, peakDbfs }
   from '../dsp/measure.js';
-import { spatialAverage, targetOnGrid, recommendEQ, recommendDelays, detectPassband, crossoverSharedRegion }
+import { spatialAverage, targetOnGrid, recommendEQ, recommendDelays, detectPassband, crossoverSharedRegion,
+         detectCrossoverCancellation }
   from '../dsp/tune.js';
 import { buildAnalysisPayload, claudeTune, validate } from './advisor.js';
 import { activeTargetCurve } from '../config/settings.js';
@@ -113,10 +114,11 @@ export class TuneSession {
     this.results = [];             // bus-layer rows only -- feed recommendations
     this.driverHealthResults = []; // shared-driver individual sweeps -- health-check only, never corrected
     this.driverHealthReports = []; // { physicalOutputId, positionId, driverA, driverB, ..., flags[] }
-    this.state = 'idle';           // idle | waiting_position | measuring | wizard | preflight | review | done
+    this.state = 'idle';           // idle | waiting_position | measuring | wizard | preflight | review | done | summation_check
     this.wizard = null;            // active shared-driver wizard step, or null
     this.recommendations = null;
     this.preflightResults = [];
+    this.summationCheck = null;    // piece 3: post-Apply/standalone crossover summation verification
 
     const s = config.audio.sweep;
     const { levelDbfs: effectiveLevelDbfs, calibrated: sweepLevelCalibrated } = computeSweepLevelDbfs(config.audio);
@@ -164,6 +166,28 @@ export class TuneSession {
 
   busFor(physicalOutput) {
     return this.cfg.buses.find((b) => b.id === physicalOutput.sourceBusId);
+  }
+
+  /**
+   * Every speakerId feeding a set of buses -- the physical output's own
+   * speakerId (if any) plus every shared-driver's speakerId (routing model
+   * section 2: a shared-driver physical output has no single speakerId of
+   * its own, only its individual drivers do). Used by runSummationCheck()
+   * to build the `sources` array for audio.setScenario()'s multi-source IR
+   * summing, mirroring how measureOnePhysicalOutput()/the wizard already
+   * resolve speaker ids for a single physical output.
+   */
+  speakerIdsForBuses(busIds) {
+    const idSet = new Set(busIds);
+    const ids = [];
+    for (const po of this.activePhysicalOutputs()) {
+      if (!idSet.has(po.sourceBusId)) continue;
+      if (po.speakerId) ids.push(po.speakerId);
+      for (const d of po.sharedDrivers?.drivers || []) {
+        if (d.speakerId) ids.push(d.speakerId);
+      }
+    }
+    return ids;
   }
 
   snapshot() {
@@ -603,6 +627,90 @@ export class TuneSession {
     }
   }
 
+  /**
+   * Post-Apply (or standalone) verification that the sub+main crossover is
+   * summing coherently, not canceling: solos subs alone, mains alone, then
+   * both together at the primary listening position, sweeps each, and runs
+   * detectCrossoverCancellation() on the three traces. Same self-contained
+   * solo/measure/restore/try-finally shape as preflightCheck() above.
+   */
+  async runSummationCheck() {
+    if (!['idle', 'done', 'review'].includes(this.state)) {
+      throw new Error('cannot run summation check while a session is running');
+    }
+    const subBuses = this.activeBuses().filter((b) => b.role === 'sub');
+    const mainBuses = this.activeBuses().filter((b) => b.role === 'main');
+    if (!subBuses.length || !mainBuses.length) {
+      throw new Error('summation check needs at least one active sub bus and one active main bus');
+    }
+    const pos = this.room.positions.find((p) => p.id === this.room.verifyPosition)
+      || this.room.positions[0];
+
+    this.state = 'summation_check';
+    this.emit('session', this.snapshot());
+
+    try {
+      const subIds = subBuses.map((b) => b.id);
+      const mainIds = mainBuses.map((b) => b.id);
+      const allIds = [...subIds, ...mainIds];
+      const phases = [
+        { phase: 'subs', busIds: subIds },
+        { phase: 'mains', busIds: mainIds },
+        { phase: 'combined', busIds: allIds }
+      ];
+
+      const traces = {};
+      for (const { phase, busIds } of phases) {
+        this.emit('summation_progress', { phase, status: 'testing' });
+        await this.wing.soloOutputs(busIds, this.activeBuses());
+        if (this.audio.setScenario) {
+          this.audio.setScenario(`summation_${phase}`, pos, this.speakerIdsForBuses(busIds));
+        }
+        await pause(400); // let mutes/patch settle -- same as measureOnePhysicalOutput()
+
+        const { mic } = await this.audio.playAndCapture(this.sweep, this.captureSeconds);
+        const ir = extractIR(mic, this.inverse, this.cfg.audio.sampleRate);
+        const { freqs, magDb } = magnitudeResponse(ir, this.cfg.audio.sampleRate);
+        traces[phase] = { freqs, magDb };
+        this.emit('summation_progress', { phase, status: 'done' });
+      }
+
+      await this.wing.unmuteAll(this.activeBuses());
+
+      const { pass, dipFreqHz, dipDepthDb } = detectCrossoverCancellation({
+        freqs: traces.subs.freqs,
+        subMagDb: traces.subs.magDb,
+        mainsMagDb: traces.mains.magDb,
+        combinedMagDb: traces.combined.magDb,
+        crossoverHz: this.cfg.system.crossoverHz
+      });
+
+      this.summationCheck = {
+        pass, dipFreqHz, dipDepthDb,
+        subTrace: { freqs: Array.from(traces.subs.freqs), magDb: Array.from(traces.subs.magDb) },
+        mainsTrace: { freqs: Array.from(traces.mains.freqs), magDb: Array.from(traces.mains.magDb) },
+        combinedTrace: { freqs: Array.from(traces.combined.freqs), magDb: Array.from(traces.combined.magDb) },
+        at: new Date().toISOString()
+      };
+      this.emit('summationCheck', this.summationCheck);
+
+      if (pass) {
+        this.emit('info', { message: 'Summation check passed — sub+main crossover summing coherently.' });
+      } else {
+        this.emit('warning', {
+          message: `Summation check FAILED — crossover cancellation detected near ${dipFreqHz} Hz (${dipDepthDb} dB below expected). Check polarity/delay.`
+        });
+      }
+
+      // Standalone runs (no recent Full Tune) have nothing to attach this
+      // to -- still emitted live above, just not persisted to a file.
+      if (this.currentRecordId) this.overwriteSessionRecord();
+    } finally {
+      this.state = 'idle';
+      this.emit('session', this.snapshot());
+    }
+  }
+
   /** Retake the previous position. */
   retake() {
     if (this.posIndex > 0 && this.state === 'waiting_position') {
@@ -853,7 +961,8 @@ export class TuneSession {
       results: this.results,
       driverHealthResults: this.driverHealthResults,
       driverHealthReports: this.driverHealthReports,
-      recommendations: this.recommendations
+      recommendations: this.recommendations,
+      summationCheck: this.summationCheck ?? null
     };
   }
 

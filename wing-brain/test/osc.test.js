@@ -224,6 +224,66 @@ test('LiveWing.unmuteAll turns off every source switch and unmutes every bus whe
   }
 });
 
+// soloOutputs() (piece 3: crossover summation check) solos a SET of buses at
+// once -- every bus in `busIds` stays live, every other bus is isolated.
+// soloOutput() is now a one-line delegation to soloOutputs([busId]), so these
+// tests exercise the same underlying mechanism the tests above already cover
+// for the single-bus case.
+
+test('LiveWing.soloOutputs mutes only the buses outside the given set (main + mtx paths)', async () => {
+  const srv = fakeConsole();
+  await srv.ready;
+  const wing = makeWing({ mode: 'live', wing: { host: '127.0.0.1', port: srv.boundPort() } });
+  try {
+    await wing.ready;
+    await wing.soloOutputs(['mains', 'sub'], buses);
+    await wait(100);
+
+    const byAddress = Object.fromEntries(srv.received.map((m) => [m.address, m.args[0]]));
+    assert.equal(byAddress['/main/1/mute'], 0, 'mains (in the set) unmuted');
+    assert.equal(byAddress['/main/2/mute'], 0, 'sub (in the set) unmuted');
+    assert.equal(byAddress['/mtx/2/mute'], 1, 'center_fill (not in the set) muted');
+  } finally {
+    wing.close(); srv.close();
+  }
+});
+
+test('LiveWing.soloOutputs uses source-side switching for every bus in the set when testSignal.auxChannel is set', async () => {
+  const srv = fakeConsole();
+  await srv.ready;
+  const wing = makeWing({ mode: 'live', wing: { host: '127.0.0.1', port: srv.boundPort() }, testSignal: { auxChannel: 1 } });
+  try {
+    await wing.ready;
+    await wing.soloOutputs(['mains', 'sub'], buses);
+    await wait(100);
+
+    const byAddress = Object.fromEntries(srv.received.map((m) => [m.address, m.args[0]]));
+    assert.equal(byAddress['/aux/1/main/1/on'], 1, 'mains source switched on');
+    assert.equal(byAddress['/aux/1/main/2/on'], 1, 'sub source switched on');
+    assert.equal(byAddress['/aux/1/send/MX2/on'], 0, 'center_fill source switched off');
+    assert.ok(!('/main/1/mute' in byAddress), 'mains bus mute never touched');
+    assert.ok(!('/main/2/mute' in byAddress), 'sub bus mute never touched');
+  } finally {
+    wing.close(); srv.close();
+  }
+});
+
+test('MockWing.soloOutputs tracks the full solo set, collapsing state.solo to a single id only when the set has exactly one member', async () => {
+  const wing = makeWing({ mode: 'mock' });
+
+  await wing.soloOutputs(['mains', 'sub'], buses);
+  assert.deepEqual(wing.state.soloSet, ['mains', 'sub']);
+  assert.equal(wing.state.solo, null, 'multi-bus set has no single solo id');
+
+  await wing.soloOutputs(['sub'], buses);
+  assert.deepEqual(wing.state.soloSet, ['sub']);
+  assert.equal(wing.state.solo, 'sub', 'single-bus set still populates state.solo, matching soloOutput()');
+
+  await wing.unmuteAll(buses);
+  assert.equal(wing.state.solo, null);
+  assert.equal(wing.state.soloSet, null);
+});
+
 test('LiveWing.applyTuning writes delay and one filter block per EQ band', async () => {
   const srv = fakeConsole();
   await srv.ready;

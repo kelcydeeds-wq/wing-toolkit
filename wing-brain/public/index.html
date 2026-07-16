@@ -177,6 +177,7 @@
         <button class="amber" id="btnFull">Full Tune<br><small>guided · all positions</small></button>
       </div>
       <button class="secondary" id="btnPreflight" style="margin-top:8px">Pre-flight Check<br><small>confirm every output returns signal before starting</small></button>
+      <button class="secondary" id="btnSummation" style="margin-top:8px">Verify Summation<br><small>sub+main crossover: subs, mains, combined sweeps</small></button>
     </div>
     <div class="card hidden" id="preflightSummaryCard">
       <h2>Last pre-flight</h2>
@@ -247,6 +248,7 @@ const send = (m) => ws.readyState === 1 && ws.send(JSON.stringify(m));
 const $ = (id) => document.getElementById(id);
 
 let room = null, session = null, lastTrace = null, history = [];
+let summationCheck = null; // last {pass, dipFreqHz, dipDepthDb, subTrace, mainsTrace, combinedTrace, at} from a 'summationCheck' event
 let appConfig = null;      // { config, room } — the server's live runtime config
 let settingsOpen = false;
 let wingStatus = { state: 'untested', detail: '' }; // untested | connected | unreachable
@@ -267,6 +269,8 @@ ws.onmessage = (e) => {
       ${payload.clipped?'<span class="warn">CLIPPED</span>':''}`; }
   if (event === 'measuring') setStatus(`Sweeping ${payload.output} @ ${payload.position}…`);
   if (event === 'preflight_progress') renderPreflightLive(payload);
+  if (event === 'summation_progress') setStatus(`Summation check: ${payload.phase} (${payload.status})…`);
+  if (event === 'summationCheck') { summationCheck = payload; render(); }
   if (event === 'sessionHistory') { history = payload; renderHistory(); }
   if (event === 'loudness') { loudness = payload; renderLoudnessMeter(); }
   if (event === 'loudnessRead') renderLoudnessNote(payload);
@@ -455,6 +459,39 @@ function setStatusDone(){
     el.insertAdjacentHTML('afterbegin',
       `<div class="card"><h2>Applied</h2><p class="ok">Tuning written to console. A/B against the saved baseline scene and trust your ears for the final call.</p></div>`);
   }
+  if (summationCheck) { el.insertAdjacentHTML('beforeend', summationCardHtml()); drawSummationTrace(); }
+}
+
+/* ---------- crossover summation check card (subs/mains/combined overlay) ---------- */
+// Colors deliberately avoid --blue/--green/--dim (already the avg/corrected/
+// target trace colors used elsewhere on this same review screen).
+const SUMMATION_COLORS = { sub: '#ffb454', mains: '#56ccf2', combined: '#bb86fc' };
+
+function summationCardHtml(){
+  const s = summationCheck; if (!s) return '';
+  const banner = s.pass
+    ? `<p class="ok"><b>PASS</b> — combined response sums coherently with the individual sub/main sweeps.</p>`
+    : `<p class="warn"><b>FAIL</b> — crossover cancellation detected near ${s.dipFreqHz} Hz (${s.dipDepthDb} dB below expected). Check polarity/delay.</p>`;
+  return `<div class="card"><h2>Summation check</h2>
+    ${banner}
+    <canvas class="trace" id="summationTrace" width="560" height="180"></canvas>
+    <div class="legend">
+      <span style="color:${SUMMATION_COLORS.sub}"><b>—</b> subs alone</span>
+      <span style="color:${SUMMATION_COLORS.mains}"><b>—</b> mains alone</span>
+      <span style="color:${SUMMATION_COLORS.combined}"><b>—</b> combined</span>
+    </div>
+    ${s.at?`<p style="color:var(--dim);font-size:12px;margin:8px 0 0">${fmtWhen(s.at)}</p>`:''}
+    </div>`;
+}
+
+function drawSummationTrace(){
+  const s = summationCheck; if (!s) return;
+  const cv = $('summationTrace'); if (!cv) return;
+  drawTrace(cv, [
+    { freqs:s.subTrace.freqs, magDb:s.subTrace.magDb, color: SUMMATION_COLORS.sub },
+    { freqs:s.mainsTrace.freqs, magDb:s.mainsTrace.magDb, color: SUMMATION_COLORS.mains },
+    { freqs:s.combinedTrace.freqs, magDb:s.combinedTrace.magDb, color: SUMMATION_COLORS.combined }
+  ]);
 }
 
 /** Shared-driver isolation wizard (routing model section 3). Server drives
@@ -571,6 +608,8 @@ function renderReview(){
       btn.onclick = () => { overlayMode[id] = !overlayMode[id]; drawOutputTrace(id, o); btn.textContent = overlayMode[id] ? 'Show average' : `Show all ${o.positions.length} positions`; };
     }
   }
+
+  if (summationCheck) { el.insertAdjacentHTML('beforeend', summationCardHtml()); drawSummationTrace(); }
 }
 
 const overlayMode = {}; // outputId -> true shows all per-position curves instead of the average
@@ -1652,6 +1691,7 @@ $('exitBtn').onclick = () => {
 $('btnVerify').onclick = () => send({action:'start', mode:'verify'});
 $('btnFull').onclick   = () => send({action:'start', mode:'full'});
 $('btnPreflight').onclick = () => send({action:'preflight'});
+$('btnSummation').onclick = () => send({action:'summation_check'});
 
 /* ============================ SETTINGS ============================ */
 

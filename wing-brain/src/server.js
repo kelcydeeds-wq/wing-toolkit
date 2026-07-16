@@ -426,6 +426,7 @@ wss.on('connection', (ws) => {
       switch (msg.action) {
         case 'start':     session.start(msg.mode); break;         // mode: 'verify' | 'full'
         case 'preflight': await session.preflightCheck(); break;
+        case 'summation_check': await session.runSummationCheck(); break;
         case 'ready':    await session.ready(); break;
         case 'retake':   session.retake(); break;
         case 'apply':    await session.apply(); applyProposedBands(); break; // the only console write

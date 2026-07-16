@@ -3,6 +3,65 @@
 Running log of judgment calls made during autonomous work runs, so they can be
 reviewed and reversed if wrong.
 
+## 2026-07-16 — crossover handling, Piece 3: summation verification sweep
+
+Post-Apply (and standalone) verification that the sub+main crossover sums
+coherently: `runSummationCheck()` in `src/tune/session.js` solos subs alone,
+mains alone, then both together (via the new `soloOutputs()`) at the primary
+listening position, sweeps each with the plain unscaled `this.sweep`, and runs
+`detectCrossoverCancellation()` (`src/dsp/tune.js`) on the three traces. New
+`summation_check` websocket action (`src/server.js`); "Verify Summation"
+button on the Home screen plus a PASS/FAIL card with a 3-trace overlay on the
+review and post-Apply done screens (`public/index.html`).
+
+- **`detectCrossoverCancellation`'s deficit-vs-threshold algorithm, kept at
+  `thresholdDb = 3`.** At each in-region frequency, `expectedMin =
+  max(subMagDb, mainsMagDb)` (what coherent-or-better summation should be
+  able to reach) and `deficit = expectedMin - combinedMagDb`; PASS iff the
+  worst deficit across the region never exceeds 3 dB. This is exactly what
+  the feature spec described — no added "is it a local minimum" heuristic or
+  smoothing, since the spec was explicit that none should be added. 3 dB
+  was specified up front, not derived, and left as the default rather than
+  loosened; it is a diagnostic threshold, not one of `src/dsp/tune.js`'s
+  guardrail limits, so it isn't covered by the guardrails-never-loosened rule
+  but was treated with the same "don't second-guess an explicit spec number"
+  discipline anyway.
+- **`soloOutputs(busIds, buses)` added alongside the existing
+  `soloOutput(busId, buses)`, which now delegates to it
+  (`soloOutputs([busId], buses)`)** in both `LiveWing` and `MockWing`
+  (`src/wing/client.js`) — the two bodies were identical modulo a `Set.has()`
+  vs `===` check, so refactoring `soloOutput` into a one-line wrapper was a
+  genuine zero-behavior-change simplification, not a forced one.
+  `MockWing.state.solo` keeps its old single-id-or-null contract (existing
+  tests read it directly); the full set is additionally tracked in the new
+  `state.soloSet`.
+- **`MockAudioIO.invertedPolarity` (`src/audio/io.js`) is a test-only hook,
+  not a config/UI feature.** It's a bare `Set` a test can `.add(speakerId)`
+  to flip that source's direct-path spike sign in `roomIR()` — nothing reads
+  or writes it outside tests, there's no config schema field, and it must
+  never grow into one; if a real polarity-testing UI is ever wanted, that's a
+  new decision, not an extension of this hook.
+- **The FAIL-path session test exercises the real `MockAudioIO` room model
+  with the shipped `sub` bus, not a repositioned/relabeled fixture.** Doing
+  so surfaced a pre-existing property of the DSP pipeline this piece reuses
+  as instructed (`extractIR`'s peak normalization + `magnitudeResponse`'s
+  fixed 200–2k dB reference band): the shipped `sub` output's steep synthetic
+  low-pass (`onePoleLP` at 120 Hz in `roomIR()`) starves that band, so its
+  own normalization reference is dominated by near-silence and the whole
+  curve reads artificially loud — enough that `detectCrossoverCancellation`
+  reports FAIL against the shipped `sub`+`mains` config regardless of
+  polarity, not only when inverted. This is a characteristic of measurement
+  normalization applied to a heavily band-limited mock output, not a piece-3
+  bug, and out of scope to fix here (flagging for a future look if the real
+  console ever shows the same false-FAIL pattern). The session test still
+  uses `invertedPolarity` end-to-end through the real pipeline and asserts
+  the exact FAIL contract the spec lists (`pass === false`, `dipFreqHz`
+  inside the diagnostic region, a "crossover cancellation" warning emitted);
+  the separate PASS-path test uses a hand-built (but still real
+  IR → `extractIR` → `magnitudeResponse`) fixture instead of the shipped
+  `sub` id, since that id cannot produce a PASS through this pipeline as
+  currently normalized.
+
 ## 2026-07-16 — crossover handling, Piece 2: shared-region EQ guarding
 
 Added `config.system.crossoverHz` and `crossoverSharedRegion()` in

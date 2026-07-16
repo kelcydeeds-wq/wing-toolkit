@@ -205,6 +205,41 @@ export function detectPassband({ freqs, magDb, band }) {
 }
 
 /**
+ * Diagnose sub+main crossover summation from a post-Apply verification sweep:
+ * subs alone, mains alone, and both together, all measured at the primary
+ * listening position. Coherent (or better) summation can never make the
+ * combined response QUIETER than whichever individual output is louder at
+ * that frequency -- that's the whole physical definition of constructive
+ * interference. So `expectedMin` (the louder of the two individuals) is a
+ * floor the combined trace should clear; `deficit` is how far under that
+ * floor the combined trace actually falls. A positive deficit means combined
+ * is quieter than either input alone -- destructive interference (wrong
+ * polarity or a delay mismatch), not merely "not extra loud."
+ *
+ * Region is `[crossoverHz*0.5, crossoverHz*2]` -- wider than
+ * crossoverSharedRegion's 0.6x/1.5x EQ-guarding window (which exists to
+ * protect independent EQ placement) because this is a diagnostic sweep
+ * across the whole acoustic handoff, not just where independent EQ gets
+ * suppressed.
+ */
+export function detectCrossoverCancellation({ freqs, subMagDb, mainsMagDb, combinedMagDb, crossoverHz, thresholdDb = 3 }) {
+  const lo = crossoverHz * 0.5, hi = crossoverHz * 2;
+  let worstDeficit = -Infinity, worstFreq = null;
+  for (let i = 0; i < freqs.length; i++) {
+    if (freqs[i] < lo || freqs[i] > hi) continue;
+    const expectedMin = Math.max(subMagDb[i], mainsMagDb[i]);
+    const deficit = expectedMin - combinedMagDb[i];
+    if (deficit > worstDeficit) { worstDeficit = deficit; worstFreq = freqs[i]; }
+  }
+  const pass = worstDeficit <= thresholdDb;
+  return {
+    pass,
+    dipFreqHz: pass ? null : Math.round(worstFreq),
+    dipDepthDb: pass ? null : Math.round(worstDeficit * 10) / 10
+  };
+}
+
+/**
  * Delay alignment: reference output (usually mains) stays at 0,
  * every other output gets delayed so arrivals match at the weighted listening area.
  * delays: { outputId: msAtEachPosition[] } — we align on the primary position set.

@@ -212,6 +212,13 @@ class MockAudioIO {
     this.sr = config.audio.sampleRate;
     this.currentOutput = 'main_l';
     this.currentPosition = { x: 9, y: 17 };
+    // TEST-ONLY HOOK (piece 3: crossover summation check) -- not a config or
+    // UI setting, just a Set a test can poke directly to prove the FAIL path
+    // of detectCrossoverCancellation() through the real mock room model: add
+    // a speakerId here and its direct-path spike in roomIR() below comes out
+    // inverted, genuinely cancelling against an in-phase source at the same
+    // position/delay. No operator-facing affordance reads or writes this.
+    this.invertedPolarity = new Set();
   }
 
   setScenario(outputId, position, sources) {
@@ -286,7 +293,9 @@ class MockAudioIO {
 
     const len = delaySamp + Math.floor(0.5 * sr);
     const ir = new Float64Array(len);
-    ir[delaySamp] = 1.0;
+    // TEST-ONLY: this.invertedPolarity (see constructor) flips the direct-path
+    // spike's sign for a deliberately mis-polarized source in tests.
+    ir[delaySamp] = (this.invertedPolarity?.has(outputId) ? -1 : 1) * 1.0;
 
     // Early reflections
     const refl = [[0.007, 0.4], [0.019, 0.3], [0.031, -0.25], [0.044, 0.2]];

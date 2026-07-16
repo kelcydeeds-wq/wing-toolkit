@@ -4,7 +4,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
 import fs from 'node:fs';
-import { spatialAverage, targetOnGrid, recommendEQ, recommendDelays, detectPassband, crossoverSharedRegion }
+import { spatialAverage, targetOnGrid, recommendEQ, recommendDelays, detectPassband, crossoverSharedRegion,
+         detectCrossoverCancellation }
   from '../src/dsp/tune.js';
 import { activeTargetCurve } from '../src/config/settings.js';
 
@@ -324,4 +325,51 @@ test('recommendEQ: omitting sharedRegion behaves exactly as before (zero regress
     freqs: grid, avg, varDb: flat(), target: target(), guardrails: g, band: [25, 120]
   });
   assert.ok(filters.length > 0, 'unchanged behavior: sub-band bump still produces a filter with no sharedRegion supplied');
+});
+
+/* ---------------- crossover summation cancellation detection (piece 3) ---------------- */
+
+test('detectCrossoverCancellation: combined louder than both individuals everywhere in-region -> PASS', () => {
+  const subMagDb = flat().fill(-3);
+  const mainsMagDb = flat().fill(-3);
+  const combinedMagDb = flat().fill(2); // well above either individual, everywhere
+  const result = detectCrossoverCancellation({
+    freqs: grid, subMagDb, mainsMagDb, combinedMagDb, crossoverHz: 100
+  });
+  assert.equal(result.pass, true);
+  assert.equal(result.dipFreqHz, null);
+  assert.equal(result.dipDepthDb, null);
+});
+
+test('detectCrossoverCancellation: a deep notch in the combined trace only (sub/main stay flat there) -> FAIL at that frequency/depth', () => {
+  const subMagDb = flat().fill(-3);
+  const mainsMagDb = flat().fill(-3);
+  const combinedMagDb = flat().fill(2);
+  // Find the grid bin closest to the crossover frequency (100 Hz) -- the
+  // deliberate notch goes there so the recovered dipFreqHz can be checked
+  // against a known value.
+  let notchIdx = 0, best = Infinity;
+  for (let i = 0; i < grid.length; i++) {
+    const d = Math.abs(Math.log2(grid[i] / 100));
+    if (d < best) { best = d; notchIdx = i; }
+  }
+  combinedMagDb[notchIdx] = -10; // deep dip, present ONLY in the combined trace
+  const result = detectCrossoverCancellation({
+    freqs: grid, subMagDb, mainsMagDb, combinedMagDb, crossoverHz: 100
+  });
+  assert.equal(result.pass, false);
+  assert.ok(Math.abs(result.dipFreqHz - grid[notchIdx]) < 1,
+    `dip should land at the known notch frequency (~100 Hz), got ${result.dipFreqHz}`);
+  // expectedMin(-3) - combined(-10) = 7 dB deficit
+  assert.equal(result.dipDepthDb, 7);
+});
+
+test('detectCrossoverCancellation: deficit exactly at thresholdDb still passes (threshold is inclusive)', () => {
+  const subMagDb = flat().fill(0);
+  const mainsMagDb = flat().fill(0);
+  const combinedMagDb = flat().fill(-3); // deficit of exactly 3 dB everywhere in-region
+  const result = detectCrossoverCancellation({
+    freqs: grid, subMagDb, mainsMagDb, combinedMagDb, crossoverHz: 100, thresholdDb: 3
+  });
+  assert.equal(result.pass, true);
 });

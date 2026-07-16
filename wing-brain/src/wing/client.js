@@ -78,11 +78,26 @@ class LiveWing {
    * is unaffected by another bus being isolated. Falls back to the old
    * mute-based method only if no `testSignal.auxChannel` is configured (e.g.
    * mock/tests, or a console where this hasn't been set up yet).
+   *
+   * A thin wrapper over soloOutputs() (below) for the single-bus case -- same
+   * mechanism, just a Set of one.
    */
   async soloOutput(busId, buses) {
+    return this.soloOutputs([busId], buses);
+  }
+
+  /**
+   * Solo a SET of buses at once (e.g. subs+mains together for the crossover
+   * summation check, piece 3) -- every bus in `buses` whose id is in
+   * `busIds` stays live, every other bus gets isolated. Same source-side/
+   * mute-based mechanism as soloOutput() above, just keyed on set membership
+   * instead of equality against a single id.
+   */
+  async soloOutputs(busIds, buses) {
     await this.ready;
+    const idSet = new Set(busIds);
     for (const bus of buses) {
-      const on = bus.id === busId;
+      const on = idSet.has(bus.id);
       const srcAddr = this.sourceSwitchAddress(bus);
       if (srcAddr) this.osc.send(srcAddr, [on ? 1 : 0]);
       else this.osc.send(`${this.path(bus)}/mute`, [on ? 0 : 1]);
@@ -151,14 +166,23 @@ class MockWing {
     this.cfg = config;
     this.osc = makeOscTransport({ mode: 'mock' });
     this.patches = new PatchManager({ config, transport: this.osc, dataDir });
-    this.state = { solo: null, applied: [] };
+    this.state = { solo: null, soloSet: null, applied: [] };
   }
   async soloOutput(busId) {
-    this.state.solo = busId;
-    log(`[mockWing] solo bus → ${busId}`);
+    return this.soloOutputs([busId]);
+  }
+  /** Solo a SET of buses at once (piece 3: crossover summation check).
+   *  `state.solo` stays a single id (or null) for backward compatibility
+   *  with soloOutput()'s existing single-bus contract and any test reading
+   *  it directly; the full set is additionally tracked in `state.soloSet`. */
+  async soloOutputs(busIds) {
+    this.state.soloSet = [...busIds];
+    this.state.solo = busIds.length === 1 ? busIds[0] : null;
+    log(`[mockWing] solo buses → ${busIds.join(', ')}`);
   }
   async unmuteAll() {
     this.state.solo = null;
+    this.state.soloSet = null;
     log('[mockWing] all buses unmuted');
   }
   async applyTuning(bus, filters, addDelayMs) {

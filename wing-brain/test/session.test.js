@@ -7,6 +7,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { TuneSession, computeSweepLevelDbfs } from '../src/tune/session.js';
 import { makeESS, fftConvolve, peakDbfs, rmsDbfs } from '../src/dsp/measure.js';
+import { makeAudioIO } from '../src/audio/io.js';
+import { makeWing } from '../src/wing/client.js';
 
 const config = JSON.parse(fs.readFileSync(new URL('../config/default.json', import.meta.url), 'utf8'));
 const room = JSON.parse(fs.readFileSync(new URL('../config/room.json', import.meta.url), 'utf8'));
@@ -53,7 +55,15 @@ function noiseCapture() {
 }
 
 function fakeWing() {
-  return { soloOutput: async () => {}, unmuteAll: async () => {} };
+  return { soloOutput: async () => {}, soloOutputs: async () => {}, unmuteAll: async () => {} };
+}
+
+// "mains" + "sub" active, nothing else -- the fixture the summation-check
+// tests need (unlike oneOutputConfig(), which strips down to "sub" alone).
+function twoBusConfig() {
+  const buses = config.buses.filter((b) => b.id === 'mains' || b.id === 'sub');
+  const physicalOutputs = config.physicalOutputs.filter((o) => o.sourceBusId === 'mains' || o.sourceBusId === 'sub');
+  return { ...config, buses, physicalOutputs };
 }
 
 function collectEvents() {
@@ -553,4 +563,156 @@ test('auto-SNR check is a no-op for audio implementations without captureAmbient
   await session.ready();
 
   assert.equal(calls, 1, 'no extra ambient-probe call when captureAmbient is not implemented');
+});
+
+/* -------------------- crossover summation check (piece 3) -------------------- */
+// runSummationCheck() solos subs alone, mains alone, then both together at the
+// primary listening position, sweeps each, and runs detectCrossoverCancellation()
+// on the three traces. Its own algorithm is unit-tested in dsp/tune.test.js;
+// these tests cover the session-level wiring: guards, event emission, and
+// session-record persistence.
+
+/** Build a capture whose recovered magnitude response is boosted well outside
+ *  the crossover region (near 1-1.2 kHz, inside magnitudeResponse's fixed
+ *  200-2k normalization reference band). That pulls the per-trace reference
+ *  mean up, which -- after normalization -- makes everywhere else, including
+ *  the crossover region, read relatively quiet. Paired with a plain flat-spike
+ *  capture (no such boost, reads ~0 dB everywhere) for the "combined" phase,
+ *  this deterministically produces a combined trace that reads louder than
+ *  either individual throughout the crossover region: the coherent-summation
+ *  PASS case, built the same "construct known ref/mic, decode through the
+ *  real IR/magnitude pipeline" way cleanCapture()/noiseCapture() already do
+ *  above, just with a custom IR instead of a plain delayed spike. */
+function midBoostedIR(freqHz, gainDb, delaySamp = 100) {
+  const len = delaySamp + Math.floor(0.3 * sr);
+  const ir = new Float64Array(len);
+  ir[delaySamp] = 1.0;
+  const g = Math.pow(10, gainDb / 20) - 1;
+  const decay = 0.05 * sr;
+  for (let i = delaySamp; i < len; i++) {
+    const t = i - delaySamp;
+    ir[i] += g * Math.sin((2 * Math.PI * freqHz * t) / sr) * Math.exp(-t / decay);
+  }
+  return ir;
+}
+function flatSpikeIR(delaySamp = 100) {
+  const ir = new Float64Array(delaySamp + 10);
+  ir[delaySamp] = 1.0;
+  return ir;
+}
+function captureFromIR(ir) {
+  const n = Math.floor(captureSeconds * sr);
+  const mic = new Float64Array(n);
+  const wet = fftConvolve(sweep, ir);
+  for (let i = 0; i < wet.length && i + 100 < n; i++) mic[i + 100] = wet[i] * 0.4;
+  return { ref: sweep, mic };
+}
+
+/** Fake audio double that returns a different synthetic capture per
+ *  runSummationCheck() phase, keyed off the scenario label it passes to
+ *  setScenario() ('summation_subs' | 'summation_mains' | 'summation_combined'). */
+function fakePassAudio() {
+  let phase = null;
+  return {
+    setScenario: (label) => { phase = label.replace('summation_', ''); },
+    playAndCapture: async () => captureFromIR(
+      phase === 'combined' ? flatSpikeIR() : midBoostedIR(phase === 'subs' ? 1000 : 1200, 18)
+    )
+  };
+}
+
+test('runSummationCheck: coherent combined response (louder than both individuals) resolves pass=true, emits an info message, no warning', async () => {
+  const { log, emit } = collectEvents();
+  const session = newSession({ config: twoBusConfig(), room, audio: fakePassAudio(), wing: fakeWing(), emit });
+
+  await session.runSummationCheck();
+
+  assert.equal(session.summationCheck.pass, true);
+  assert.equal(session.summationCheck.dipFreqHz, null);
+  assert.equal(session.summationCheck.dipDepthDb, null);
+  assert.ok(log.some((e) => e.event === 'info' && /Summation check passed/.test(e.payload.message)));
+  assert.ok(!log.some((e) => e.event === 'warning' && /crossover cancellation/i.test(e.payload.message)));
+  assert.equal(session.state, 'idle', 'session returns to idle when the check finishes');
+});
+
+test('runSummationCheck: a deliberately polarity-inverted sub, run through the REAL MockAudioIO room model, resolves pass=false', async () => {
+  // Unlike the PASS test above (a synthetic fixture, appropriate for proving
+  // the session wiring calls detectCrossoverCancellation correctly), this is
+  // the concrete end-to-end proof the feature spec asks for: the actual
+  // MockWing + MockAudioIO + TuneSession path, with the invertedPolarity
+  // test-only hook (src/audio/io.js) flipping the sub's direct-path spike,
+  // captured/analyzed by the real sweep -> extractIR -> magnitudeResponse
+  // pipeline runSweep() itself uses -- nothing about the FAIL result here is
+  // hand-computed or asserted against a pre-baked curve.
+  const cfg = { ...twoBusConfig(), mode: 'mock' };
+  const audio = makeAudioIO(cfg);
+  const wing = makeWing(cfg, { dataDir: TMP_DATA_DIR });
+  audio.invertedPolarity.add('sub'); // "sub" is config/default.json's sub bus's physicalOutput speakerId
+  const { log, emit } = collectEvents();
+  const session = newSession({ config: cfg, room, audio, wing, emit });
+
+  await session.runSummationCheck();
+
+  assert.equal(session.summationCheck.pass, false);
+  assert.ok(Number.isFinite(session.summationCheck.dipFreqHz), 'dipFreqHz should be a real frequency');
+  assert.ok(session.summationCheck.dipFreqHz >= 50 && session.summationCheck.dipFreqHz <= 200,
+    `dip should land inside the 100 Hz crossover's diagnostic region (50-200 Hz), got ${session.summationCheck.dipFreqHz}`);
+  assert.ok(session.summationCheck.dipDepthDb > 0);
+  assert.ok(log.some((e) => e.event === 'warning' && /crossover cancellation/i.test(e.payload.message)));
+});
+
+test('runSummationCheck throws when no sub bus is active', async () => {
+  const mainsOnly = {
+    ...config,
+    buses: config.buses.filter((b) => b.id === 'mains'),
+    physicalOutputs: config.physicalOutputs.filter((o) => o.sourceBusId === 'mains')
+  };
+  const session = newSession({ config: mainsOnly, room, audio: fakePassAudio(), wing: fakeWing(), emit: () => {} });
+  await assert.rejects(() => session.runSummationCheck(),
+    /summation check needs at least one active sub bus and one active main bus/);
+});
+
+test('runSummationCheck throws when no main bus is active', async () => {
+  const subOnly = {
+    ...config,
+    buses: config.buses.filter((b) => b.id === 'sub'),
+    physicalOutputs: config.physicalOutputs.filter((o) => o.sourceBusId === 'sub')
+  };
+  const session = newSession({ config: subOnly, room, audio: fakePassAudio(), wing: fakeWing(), emit: () => {} });
+  await assert.rejects(() => session.runSummationCheck(),
+    /summation check needs at least one active sub bus and one active main bus/);
+});
+
+test('runSummationCheck refuses to run while a session is already in progress', async () => {
+  const audio = { playAndCapture: async () => cleanCapture(20) };
+  const session = newSession({ config: twoBusConfig(), room, audio, wing: fakeWing(), emit: () => {} });
+  session.start('verify'); // state -> waiting_position
+  await assert.rejects(() => session.runSummationCheck(),
+    /cannot run summation check while a session is running/);
+});
+
+test('runSummationCheck attaches its result to the current session record on disk when one exists (e.g. right after a Full Tune)', async () => {
+  const audio = { setScenario: () => {}, playAndCapture: async () => cleanCapture(20) };
+  const oneOutputRoom = { ...room, positions: room.positions.filter((p) => p.id === 'p1') };
+  const session = newSession({ config: twoBusConfig(), room: oneOutputRoom, audio, wing: fakeWing(), emit: () => {} });
+
+  session.start('full');
+  await session.ready(); // only position -> finish() runs automatically, setting currentRecordId
+  assert.ok(session.currentRecordId, 'a Full Tune should have produced a session record');
+
+  await session.runSummationCheck();
+
+  const file = path.join(TMP_DATA_DIR, 'sessions', `${session.currentRecordId}.json`);
+  const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assert.ok(saved.summationCheck, 'the saved session record should include the summation check result');
+  assert.equal(saved.summationCheck.pass, session.summationCheck.pass);
+});
+
+test('runSummationCheck still runs (and is not persisted anywhere) for a standalone call with no current session record', async () => {
+  const session = newSession({ config: twoBusConfig(), room, audio: fakePassAudio(), wing: fakeWing(), emit: () => {} });
+  assert.equal(session.currentRecordId, undefined);
+
+  await session.runSummationCheck();
+
+  assert.ok(session.summationCheck, 'result is still emitted/available live even with nothing to persist to');
 });
