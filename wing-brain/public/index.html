@@ -1052,6 +1052,18 @@ function uniqueId(base, existingIds) {
 const ROLE_BAND = { main: [40, 16000], sub: [25, 120], fill: [80, 16000] };
 const ROLE_WING_TYPE = { main: 'main', sub: 'main', fill: 'mtx' };
 
+/** sub/main default band, derived from config.system.crossoverHz when
+ *  present so a newly-added speaker starts consistent with the configured
+ *  crossover instead of silently reintroducing the old hardcoded numbers
+ *  (see ROLE_BAND above, which is still the fallback when crossoverHz is
+ *  somehow absent client-side). fill's default is unrelated to the
+ *  crossover and always comes from ROLE_BAND. */
+function roleBandFor(role, crossoverHz) {
+  if (role === 'sub') return crossoverHz ? [25, Math.round(crossoverHz * 1.5)] : ROLE_BAND.sub;
+  if (role === 'main') return crossoverHz ? [Math.round(crossoverHz * 0.6), 16000] : ROLE_BAND.main;
+  return ROLE_BAND[role];
+}
+
 /** Next unused bus.wing.num for a wing.type ("main"/"mtx") -- a helpful
  *  default only; wing.confirmed on the new bus is always false regardless. */
 function nextWingNum(buses, type) {
@@ -1187,7 +1199,7 @@ async function createRoomSpeaker(x, y, opts = {}) {
   const bus = {
     id: busId, label, role, stereo: false,
     wing: { type: wingType, num: wingNum, confirmed: false },
-    band: ROLE_BAND[role], sweepTrimDb: 0
+    band: roleBandFor(role, appConfig.config.system?.crossoverHz), sweepTrimDb: 0
   };
   const output = {
     id: outputId, label, sourceBusId: busId, side: 'mono', speakerId,

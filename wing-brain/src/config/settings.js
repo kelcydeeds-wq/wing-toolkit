@@ -66,6 +66,11 @@ export function validateConfig(config, room) {
   port('wing.port', config.wing?.port);
   if (!isStr(config.wing?.host)) bad('wing.host: must be a non-empty string');
 
+  const sys = config.system || {};
+  if (!isNum(sys.crossoverHz) || sys.crossoverHz < 40 || sys.crossoverHz > 300) {
+    bad('system.crossoverHz: must be a number 40-300 Hz');
+  }
+
   const a = config.audio || {};
   if (!isInt(a.sampleRate) || a.sampleRate < 8000 || a.sampleRate > 192000) {
     bad('audio.sampleRate: must be an integer 8000-192000');

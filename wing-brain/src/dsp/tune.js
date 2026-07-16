@@ -52,12 +52,33 @@ export function spatialAverage(measurements) {
 }
 
 /**
+ * The sub/main crossover handoff region: both outputs contribute through
+ * this overlap by design, so it's excluded from independent local EQ
+ * placement (see recommendEQ's `sharedRegion` param) and flagged for the
+ * Claude advisor to reason about jointly instead. Exported (not just used
+ * internally) because piece 3 (summation-verification sweep) will reuse the
+ * same region definition.
+ */
+export function crossoverSharedRegion(crossoverHz) {
+  return [crossoverHz * 0.6, crossoverHz * 1.5];
+}
+
+/**
  * Recommend parametric EQ for one output.
  * Deviations = avg - target. Below eqAutoMaxHz: parametric correction of the
  * largest stable deviations. Above: a single gentle shelf/tilt suggestion only.
  * High position-variance regions (likely position-dependent nulls/combs) are skipped.
+ *
+ * `sharedRegion` (optional [lo, hi] pair, e.g. from crossoverSharedRegion())
+ * marks the sub/main crossover handoff region: no independent parametric
+ * filter is ever placed inside it (same exclusion mechanism as the
+ * nullVarianceDb skip, just a different reason -- shared handoff, not
+ * measurement noise), and its average deviation is returned separately so
+ * the advisor can reason about the sub+main handoff jointly instead of each
+ * output chasing it in isolation. Returns { filters, sharedRegionDeviationDb }
+ * -- sharedRegionDeviationDb is null when sharedRegion wasn't supplied.
  */
-export function recommendEQ({ freqs, avg, varDb, target, guardrails, band = [40, 16000] }) {
+export function recommendEQ({ freqs, avg, varDb, target, guardrails, band = [40, 16000], sharedRegion = null }) {
   const g = guardrails;
 
   // Work only inside this output's band, renormalized within it so a sub
@@ -74,9 +95,11 @@ export function recommendEQ({ freqs, avg, varDb, target, guardrails, band = [40,
   const used = new Uint8Array(freqs.length);
   const chosen = []; // center freqs, for spacing enforcement
 
+  const inSharedRegion = (i) => sharedRegion && freqs[i] >= sharedRegion[0] && freqs[i] <= sharedRegion[1];
+
   const lowIdx = [];
   for (let i = 0; i < freqs.length; i++) {
-    if (inBand(i) && freqs[i] <= g.eqAutoMaxHz && freqs[i] >= g.minFilterHz) lowIdx.push(i);
+    if (inBand(i) && freqs[i] <= g.eqAutoMaxHz && freqs[i] >= g.minFilterHz && !inSharedRegion(i)) lowIdx.push(i);
   }
 
   while (filters.length < g.maxFiltersPerOutput) {
@@ -133,7 +156,16 @@ export function recommendEQ({ freqs, avg, varDb, target, guardrails, band = [40,
     }
   }
 
-  return filters;
+  let sharedRegionDeviationDb = null;
+  if (sharedRegion) {
+    let s = 0, n2 = 0;
+    for (let i = 0; i < freqs.length; i++) {
+      if (freqs[i] >= sharedRegion[0] && freqs[i] <= sharedRegion[1]) { s += dev[i]; n2++; }
+    }
+    sharedRegionDeviationDb = n2 ? round1(s / n2) : null;
+  }
+
+  return { filters, sharedRegionDeviationDb };
 }
 
 /**

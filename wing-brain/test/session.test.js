@@ -379,6 +379,36 @@ test('buildRecommendations attaches the current band and an auto-detected propos
   assert.ok(rec.perOutput.sub.proposedBand.lo < rec.perOutput.sub.proposedBand.hi);
 });
 
+/* -------------------- crossover shared-region deviation (piece 2) -------------------- */
+
+test('buildRecommendations attaches sharedRegionDeviationDb to a sub bus perOutput entry when config.system.crossoverHz is set', async () => {
+  const audio = { playAndCapture: async () => cleanCapture(20) };
+  const oneOutputRoom = { ...room, positions: room.positions.filter((p) => p.id === 'p1') };
+  const session = newSession({ config: oneOutputConfig(), room: oneOutputRoom, audio, wing: fakeWing(), emit: () => {} });
+  session.start('full');
+  await session.ready(); // only position -> finish() runs automatically
+
+  const rec = session.buildRecommendations();
+  assert.ok(rec.perOutput.sub, 'sub bus should have a usable correction');
+  assert.ok('sharedRegionDeviationDb' in rec.perOutput.sub, 'sharedRegionDeviationDb key is present');
+  assert.equal(typeof rec.perOutput.sub.sharedRegionDeviationDb, 'number', 'sub is a role covered by the crossover handoff, so it gets a computed value, not null');
+});
+
+test('buildRecommendations leaves sharedRegionDeviationDb null for a fill bus (crossover handoff is sub/main only)', async () => {
+  const audio = { playAndCapture: async () => cleanCapture(20) };
+  const fillBus = config.buses.find((b) => b.id === 'center_fill');
+  const fillOutput = config.physicalOutputs.find((o) => o.id === 'center_fill_out');
+  const fillConfig = { ...config, buses: [fillBus], physicalOutputs: [fillOutput] };
+  const oneOutputRoom = { ...room, positions: room.positions.filter((p) => p.id === 'p1') };
+  const session = newSession({ config: fillConfig, room: oneOutputRoom, audio, wing: fakeWing(), emit: () => {} });
+  session.start('full');
+  await session.ready();
+
+  const rec = session.buildRecommendations();
+  assert.ok(rec.perOutput.center_fill, 'fill bus should have a usable correction');
+  assert.equal(rec.perOutput.center_fill.sharedRegionDeviationDb, null, 'fills are not part of the sub/main handoff');
+});
+
 test('finish() warns about excluded measurements and buses left with no usable data', async () => {
   const audio = { playAndCapture: async () => noiseCapture() };
   const log = [];

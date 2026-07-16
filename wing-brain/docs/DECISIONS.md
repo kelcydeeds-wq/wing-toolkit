@@ -3,6 +3,42 @@
 Running log of judgment calls made during autonomous work runs, so they can be
 reviewed and reversed if wrong.
 
+## 2026-07-16 — crossover handling, Piece 2: shared-region EQ guarding
+
+Added `config.system.crossoverHz` and `crossoverSharedRegion()` in
+`src/dsp/tune.js` (`[crossoverHz * 0.6, crossoverHz * 1.5]`) — the sub/main
+handoff region, exported for reuse by piece 3 (summation-verification sweep).
+`recommendEQ()` now takes an optional `sharedRegion` param: candidate filter
+placement excludes any index inside it (same mechanism as the existing
+`nullVarianceDb` skip), and the region's average deviation is returned
+separately as `sharedRegionDeviationDb` for the Claude advisor to reason
+about jointly instead of either output getting an independent aggressive
+cut there. `session.js`'s `buildRecommendations()` only passes `sharedRegion`
+for buses with `role === 'sub' || role === 'main'` — fills aren't part of the
+handoff. This only guards EQ *recommendation*; nothing electrical is written
+anywhere (where the real crossover lives — Wing output processing, amp DSP,
+or inside a powered speaker — is unconfirmed, added to `CHECKLIST.md`'s
+church session agenda as item 9).
+
+- **`recommendEQ`'s return shape changed from a bare `filters` array to
+  `{ filters, sharedRegionDeviationDb }`.** This was necessary rather than
+  bolting the new value on some other way (e.g. a second return value, an
+  out-param, a global) because `sharedRegionDeviationDb` is computed from the
+  exact same `dev` array `recommendEQ` already builds internally for filter
+  placement — recomputing it outside the function with a second pass over
+  `avg`/`target` would risk the two numbers drifting out of sync if the
+  deviation math ever changes in one place and not the other. Every call
+  site (`src/tune/session.js`, `test/tune.test.js`) was re-grepped and
+  migrated to destructure the new shape; the param itself defaults to `null`
+  so every pre-existing caller that doesn't pass `sharedRegion` is provably
+  unchanged (see the explicit zero-regression test in `test/tune.test.js`).
+- **0.6x/1.5x shared-region multipliers** were specified by the feature
+  request, not derived — used in `crossoverSharedRegion()` (`src/dsp/tune.js`),
+  `buildRecommendations()` (`src/tune/session.js`), the advisor payload
+  (`src/tune/advisor.js`), and the visual editor's new-speaker band defaults
+  (`public/index.html`'s `roleBandFor()`, sub -> `[25, crossoverHz*1.5]`,
+  main -> `[crossoverHz*0.6, 16000]`).
+
 ## 2026-07-15 — crossover handling, Piece 1: auto-detected passbands
 
 Full Tune now derives each output's ACTUAL acoustic passband from its

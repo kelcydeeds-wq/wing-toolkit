@@ -7,6 +7,9 @@
     "host": "192.168.25.80",
     "port": 2223
   },
+  "system": {
+    "crossoverHz": 100
+  },
   "testSignal": {
     "comment": "CONFIRMED 2026-07-14: sweep injection is via the PC's USB audio, NOT OSC. The PC plays out 'OUT 1-2 (WING-USB)'; on the console that arrives as Aux input 1 ('PC', sourced /aux/1 from USB/1). This OSC test-signal-injection path (per-driver repatch via PatchManager) is unused and stays confirmed:false. `auxChannel` below is a SEPARATE mechanism: bus isolation (soloOutput) toggles this aux strip's own per-bus sends (/aux/<n>/main/<m>/on, /aux/<n>/send/MX<m>/on) instead of muting bus masters, because muting Main 1 also mutes the linked Main 2 (sub) -- see docs/MEASUREMENT_RIG.md.",
     "source": "usb_sweep",

@@ -4,7 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert';
 import fs from 'node:fs';
-import { spatialAverage, targetOnGrid, recommendEQ, recommendDelays, detectPassband }
+import { spatialAverage, targetOnGrid, recommendEQ, recommendDelays, detectPassband, crossoverSharedRegion }
   from '../src/dsp/tune.js';
 import { activeTargetCurve } from '../src/config/settings.js';
 
@@ -159,7 +159,7 @@ test('recommendEQ never places filters outside the output band (sub case)', () =
     if (Math.abs(Math.log2(grid[i] / 500)) < 0.2) avg[i] = 8;
     if (Math.abs(Math.log2(grid[i] / 3000)) < 0.2) avg[i] = 8;
   }
-  const filters = recommendEQ({
+  const { filters } = recommendEQ({
     freqs: grid, avg, varDb: flat(), target: target(), guardrails: g, band: [25, 120]
   });
   assert.ok(filters.length > 0, 'sub-band bump should produce a filter');
@@ -177,7 +177,7 @@ test('recommendEQ skips high-variance regions (position-dependent nulls)', () =>
       varDb[i] = g.nullVarianceDb + 2; // unstable — do not EQ
     }
   }
-  const filters = recommendEQ({
+  const { filters } = recommendEQ({
     freqs: grid, avg, varDb, target: target(), guardrails: g, band: [40, 16000]
   });
   // Unstable region spans 80 Hz ±0.25 oct ≈ 67–95 Hz — despite the 10 dB bump
@@ -192,7 +192,7 @@ test('recommendEQ never boosts below noBoostBelowHz and clamps gains to limits',
     if (Math.abs(Math.log2(grid[i] / 63)) < 0.2) avg[i] = -15;  // deep dip below noBoost line
     if (Math.abs(Math.log2(grid[i] / 200)) < 0.2) avg[i] = 20;  // huge bump
   }
-  const filters = recommendEQ({
+  const { filters } = recommendEQ({
     freqs: grid, avg, varDb: flat(), target: target(), guardrails: g, band: [40, 16000]
   });
   for (const f of filters) {
@@ -212,7 +212,7 @@ test('recommendEQ full-range output can get an HF tilt shelf; parametrics stay b
   for (let i = 0; i < grid.length; i++) {
     if (grid[i] >= 4000) avg[i] = 5; // bright top end vs downward-tilt target
   }
-  const filters = recommendEQ({
+  const { filters } = recommendEQ({
     freqs: grid, avg, varDb: flat(), target: target(), guardrails: g, band: [40, 16000]
   });
   const shelf = filters.find((f) => f.type === 'hshelf');
@@ -257,4 +257,71 @@ test('detectPassband: degenerate/noisy data (edges collapse to the same rounded 
   const magDb = Float64Array.from([0, 0]);
   const result = detectPassband({ freqs, magDb, band: [900, 1100] });
   assert.deepEqual(result, { lo: 900, hi: 1100 }, 'falls back to the current band unchanged');
+});
+
+/* ------------------- crossover shared-region guarding (piece 2) ----------------- */
+
+test('crossoverSharedRegion: returns [0.6x, 1.5x] of the crossover frequency', () => {
+  assert.deepEqual(crossoverSharedRegion(100), [60, 150]);
+  assert.deepEqual(crossoverSharedRegion(80), [48, 120]);
+});
+
+test('recommendEQ: sharedRegion suppresses independent filter placement inside the crossover handoff region', () => {
+  const region = crossoverSharedRegion(100); // [60, 150]
+  const avg = flat();
+  for (let i = 0; i < grid.length; i++) {
+    if (Math.abs(Math.log2(grid[i] / 100)) < 0.15) avg[i] = 8; // bump centered in the region
+  }
+  const without = recommendEQ({
+    freqs: grid, avg, varDb: flat(), target: target(), guardrails: g, band: [40, 16000]
+  });
+  assert.ok(without.filters.some((f) => f.freq >= region[0] && f.freq <= region[1]),
+    'sanity: without sharedRegion this bump WOULD get an independent filter inside what becomes the shared region');
+
+  const withRegion = recommendEQ({
+    freqs: grid, avg, varDb: flat(), target: target(), guardrails: g, band: [40, 16000], sharedRegion: region
+  });
+  assert.ok(!withRegion.filters.some((f) => f.freq >= region[0] && f.freq <= region[1]),
+    'no independent filter placed inside the shared crossover handoff region');
+});
+
+test('recommendEQ: sharedRegionDeviationDb reflects the region average of the same dev array used for filter placement', () => {
+  const band = [40, 16000];
+  const region = crossoverSharedRegion(100); // [60, 150]
+  const avg = flat();
+  const targetFlat = flat(); // all-zero target -> dev == avg - mAvg
+  let regionCount = 0, bandCount = 0;
+  for (let i = 0; i < grid.length; i++) {
+    const inBand = grid[i] >= band[0] && grid[i] <= band[1];
+    const inRegion = grid[i] >= region[0] && grid[i] <= region[1];
+    if (inBand) {
+      bandCount++;
+      if (inRegion) { avg[i] = 10; regionCount++; }
+    }
+  }
+  const mAvg = (regionCount * 10) / bandCount; // rest of the band is 0, so this is the full in-band mean
+  const expected = Math.round((10 - mAvg) * 10) / 10;
+
+  const { sharedRegionDeviationDb } = recommendEQ({
+    freqs: grid, avg, varDb: flat(), target: targetFlat, guardrails: g, band, sharedRegion: region
+  });
+  assert.equal(sharedRegionDeviationDb, expected);
+});
+
+test('recommendEQ: sharedRegionDeviationDb is null when sharedRegion is omitted', () => {
+  const { sharedRegionDeviationDb } = recommendEQ({
+    freqs: grid, avg: flat(), varDb: flat(), target: target(), guardrails: g, band: [40, 16000]
+  });
+  assert.equal(sharedRegionDeviationDb, null);
+});
+
+test('recommendEQ: omitting sharedRegion behaves exactly as before (zero regression for existing callers)', () => {
+  const avg = flat();
+  for (let i = 0; i < grid.length; i++) {
+    if (Math.abs(Math.log2(grid[i] / 60)) < 0.2) avg[i] = 8;
+  }
+  const { filters } = recommendEQ({
+    freqs: grid, avg, varDb: flat(), target: target(), guardrails: g, band: [25, 120]
+  });
+  assert.ok(filters.length > 0, 'unchanged behavior: sub-band bump still produces a filter with no sharedRegion supplied');
 });

@@ -89,6 +89,28 @@ test('rejects an unknown mode', () => {
   assert.ok(validateConfig(cfg).some((e) => /mode/.test(e)));
 });
 
+test('accepts system.crossoverHz within the sane 40-300 Hz range', () => {
+  for (const good of [40, 80, 100, 300]) {
+    const cfg = goodConfig();
+    cfg.system.crossoverHz = good;
+    assert.deepEqual(validateConfig(cfg), [], `crossoverHz=${good} should validate clean`);
+  }
+});
+
+test('rejects system.crossoverHz outside the sane 40-300 Hz range', () => {
+  for (const bad of [0, 39, 301, 1000, 'abc', null]) {
+    const cfg = goodConfig();
+    cfg.system.crossoverHz = bad;
+    assert.ok(validateConfig(cfg).some((e) => /system\.crossoverHz/.test(e)), `crossoverHz=${bad} should fail`);
+  }
+});
+
+test('rejects a missing system section', () => {
+  const cfg = goodConfig();
+  delete cfg.system;
+  assert.ok(validateConfig(cfg).some((e) => /system\.crossoverHz/.test(e)));
+});
+
 test('rejects a band with lo >= hi', () => {
   const cfg = goodConfig();
   cfg.buses[0].band = [16000, 40];

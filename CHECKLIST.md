@@ -65,6 +65,12 @@ buffer/driver tuning → SuperRack fallback (architecture doc already covers it)
 6. Walk the room with the building sketch → replace `config/room.json` positions.
 7. Run first real **Full Tune** → A/B the result → save baseline.
 8. Record ~1 hour of OSC traffic during any rehearsal → mock replay data.
+9. TODO(church): confirm where the electrical sub/main crossover actually
+   lives — Wing output processing, amp DSP, or inside a powered speaker.
+   `wing-brain`'s `config.system.crossoverHz` only guards EQ recommendation
+   and advisor reasoning around the sub/main handoff region; it never writes
+   an actual crossover filter, so this stays an open physical signal-chain
+   question until confirmed on-site.
 
 ## RESULTS (fill in)
 

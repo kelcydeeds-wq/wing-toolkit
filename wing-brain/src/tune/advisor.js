@@ -12,7 +12,7 @@
 // Without a key, the app silently uses the local recommender and marks the
 // result "source: local".
 
-import { recommendEQ, recommendDelays, spatialAverage, targetOnGrid } from '../dsp/tune.js';
+import { recommendEQ, recommendDelays, spatialAverage, targetOnGrid, crossoverSharedRegion } from '../dsp/tune.js';
 import { activeTargetCurve } from '../config/settings.js';
 
 const API_URL = 'https://api.anthropic.com/v1/messages';
@@ -53,7 +53,8 @@ export function buildAnalysisPayload({ config, room, results, localRec }) {
       targetDb: ds(grid, target),
       delaysMsByPosition: Object.fromEntries(rs.map((r) => [r.positionId, Math.round(r.delayMs * 10) / 10])),
       polarity: rs.map((r) => r.polarity),
-      levelsDbfs: rs.map((r) => r.levelDbfs)
+      levelsDbfs: rs.map((r) => r.levelDbfs),
+      sharedRegionDeviationDb: localRec?.perOutput?.[output.id]?.sharedRegionDeviationDb ?? null
     };
   }
 
@@ -67,6 +68,8 @@ export function buildAnalysisPayload({ config, room, results, localRec }) {
     },
     guardrails: config.guardrails,
     targetCurveName: activeTargetCurve(config).name,
+    crossoverHz: config.system?.crossoverHz ?? null,
+    sharedRegionHz: config.system?.crossoverHz ? crossoverSharedRegion(config.system.crossoverHz) : null,
     outputs,
     localRecommendation: localRec ? {
       note: 'heuristic fallback recommender output — improve on it, ignore it, or endorse it',
@@ -80,7 +83,7 @@ export function buildAnalysisPayload({ config, room, results, localRec }) {
 
 const SYSTEM_PROMPT = `You are the tuning engineer for a church PA (worship band + speech), analyzing multi-position transfer-function measurements. You receive per-output spatially-averaged magnitude responses, position variance, delay/polarity/level data, room geometry, and a heuristic recommender's attempt.
 
-Reason like a system tech: distinguish room modes from speaker response from position-dependent interference (high variance = don't EQ it). Below ~300 Hz be surgical where variance is low. Above, shape broadly toward the target tilt; never chase narrow HF features from averaged data. Prefer cuts. Boosts only into stable, broad dips, wide Q. Respect each output's passband. Consider crossover-region interaction between subs and mains when judging the low end. Flag polarity or geometry anomalies rather than EQing around them.
+Reason like a system tech: distinguish room modes from speaker response from position-dependent interference (high variance = don't EQ it). Below ~300 Hz be surgical where variance is low. Above, shape broadly toward the target tilt; never chase narrow HF features from averaged data. Prefer cuts. Boosts only into stable, broad dips, wide Q. Respect each output's passband. Consider crossover-region interaction between subs and mains when judging the low end. The payload marks a shared crossover handoff region (\`sharedRegionHz\`) between sub and main outputs — both contribute through this overlap by design. Do not propose independent aggressive EQ cuts for either output inside that region; instead reason jointly about the sub+main handoff (e.g. a dip there might mean the crossover point itself needs to shift, or the two outputs are summing destructively, not that one output needs an isolated cut) and say so in your note/summary if an output's sharedRegionDeviationDb is notable. Flag polarity or geometry anomalies rather than EQing around them.
 
 Respond ONLY with JSON, no markdown fences, matching:
 {

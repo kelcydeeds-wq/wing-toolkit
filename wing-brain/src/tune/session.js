@@ -31,7 +31,7 @@
 import { makeESS, makeBlip, scaleBuffer, extractIR, findDelay, magnitudeResponse,
          polarity, rmsDbfs, isClipped, estimateSnrDb, peakDbfs }
   from '../dsp/measure.js';
-import { spatialAverage, targetOnGrid, recommendEQ, recommendDelays, detectPassband }
+import { spatialAverage, targetOnGrid, recommendEQ, recommendDelays, detectPassband, crossoverSharedRegion }
   from '../dsp/tune.js';
 import { buildAnalysisPayload, claudeTune, validate } from './advisor.js';
 import { activeTargetCurve } from '../config/settings.js';
@@ -733,9 +733,12 @@ export class TuneSession {
         (weighted.length ? weighted : rs).map((r) => ({ magDb: Float64Array.from(r.magDb), weight: r.positionWeight || 1 }))
       );
       const target = targetOnGrid(activeTargetCurve(this.cfg).points, Float64Array.from(grid));
-      const filters = recommendEQ({
+      const sharedRegion = (bus.role === 'sub' || bus.role === 'main') && this.cfg.system?.crossoverHz
+        ? crossoverSharedRegion(this.cfg.system.crossoverHz)
+        : null;
+      const { filters, sharedRegionDeviationDb } = recommendEQ({
         freqs: Float64Array.from(grid), avg, varDb, target, guardrails: g,
-        band: bus.band
+        band: bus.band, sharedRegion
       });
 
       // Proposed vs current passband (piece 1 of crossover handling) -- the
@@ -748,6 +751,7 @@ export class TuneSession {
       perOutput[bus.id] = {
         label: bus.label,
         filters,
+        sharedRegionDeviationDb,
         band: bus.band,
         proposedBand,
         avg: Array.from(avg), varDb: Array.from(varDb),
