@@ -16,6 +16,7 @@ import { TuneSession, listSessionHistory } from './tune/session.js';
 import { validateConfig, validateRoomPatch, mergeDeep, writeJsonAtomic } from './config/settings.js';
 import { LoudnessMonitor, listLoudnessHistory, computeSplOffset } from './audio/loudness-monitor.js';
 import { identifyOutputs } from '../scripts/identify-outputs.mjs';
+import { readConsoleNames } from './wing/console-names.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
@@ -28,6 +29,7 @@ const ROOM_PATH = path.join(root, 'config/room.json');
 
 let config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
 if (process.env.MODE) config.mode = process.env.MODE; // boot-time override only (npm run dev forces mock)
+if (process.env.PORT) config.server.port = Number(process.env.PORT); // boot-time override (e.g. a second test instance)
 let room = JSON.parse(fs.readFileSync(ROOM_PATH, 'utf8'));
 
 const app = express();
@@ -51,6 +53,11 @@ function broadcast(event, payload) {
 // The loudness monitor is deliberately separate from `session` — it must
 // keep running through tune sessions, mode changes, everything.
 let audio, wing, session, loudness;
+// Cached per-session console name read (mains/matrices/buses). Never
+// auto-refreshed (no polling) -- lazily filled on first request, then only on
+// an explicit "Refresh from console" tap. Invalidated on every buildRuntime()
+// because a mode/host change makes the previous read meaningless.
+let consoleNames = null;
 function buildRuntime() {
   try { wing?.close?.(); } catch { /* old transport may already be gone */ }
   try { loudness?.stop?.(); } catch { /* best effort */ }
@@ -59,8 +66,20 @@ function buildRuntime() {
   session = new TuneSession({ config, room, audio, wing, emit: broadcast });
   loudness = new LoudnessMonitor({ config, room, emit: broadcast });
   loudness.start();
+  consoleNames = null; // stale once mode/host may have changed
 }
 buildRuntime();
+
+/** Read every main/mtx/bus scribble name off the console, cache it, and push
+ *  it to all clients. The single place a name read happens on the server --
+ *  what it returns is exactly what the console said (mock => no names). */
+async function refreshConsoleNames() {
+  consoleNames = await readConsoleNames({
+    mock: config.mode === 'mock', host: config.wing.host, port: config.wing.port, timeoutMs: 800
+  });
+  broadcast('consoleNames', consoleNames);
+  return consoleNames;
+}
 
 /** True when saving settings would destroy in-flight work. */
 function sessionBusy() {
@@ -121,6 +140,30 @@ app.post('/api/loudness/calibrate', (req, res) => {
   buildRuntime();
   broadcast('config', { config, room });
   res.json({ ok: true, offsetDb: Math.round(offsetDb * 10) / 10, measuredDbfs: Math.round(dbfs * 10) / 10, config });
+});
+
+// Console scribble-strip names (mains/matrices/buses) for the routing picker.
+// GET returns the per-session cache, lazily doing the FIRST read if nothing is
+// cached yet (so opening the picker "just works"); it never re-reads a live
+// console on its own after that. POST /refresh forces a fresh read -- the only
+// thing that re-hits the console, i.e. the manual "Refresh from console" tap.
+// Read-only. What comes back is exactly what the console reported; mock mode
+// returns no names at all (see src/wing/console-names.js).
+app.get('/api/console-names', async (_req, res) => {
+  try {
+    if (!consoleNames) await refreshConsoleNames();
+    res.json(consoleNames);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
+});
+
+app.post('/api/console-names/refresh', async (_req, res) => {
+  try {
+    res.json(await refreshConsoleNames());
+  } catch (err) {
+    res.status(500).json({ ok: false, error: String(err.message || err) });
+  }
 });
 
 // Live main/mtx name+mute query (scripts/identify-outputs.mjs) so the Buses
@@ -418,6 +461,7 @@ wss.on('connection', (ws) => {
   ws.send(JSON.stringify({ event: 'loudnessHistory', payload: listLoudnessHistory() }));
   const loudnessSnapshot = loudness.snapshot();
   if (loudnessSnapshot) ws.send(JSON.stringify({ event: 'loudness', payload: loudnessSnapshot }));
+  if (consoleNames) ws.send(JSON.stringify({ event: 'consoleNames', payload: consoleNames }));
 
   ws.on('message', async (raw) => {
     let msg;

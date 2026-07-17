@@ -436,6 +436,11 @@ let pickingFullTuneSelection = false; // client-side only -- true while tuneSele
 let wingStatus = { state: 'untested', detail: '' }; // untested | connected | unreachable
 let loudness = null;       // last { levelDb, status, targetDb, ... } from the loudness monitor
 let loudnessHistory = [];
+// Last console name read: { readAt, mock, ok, answered, total, entries:{main,mtx,bus} }.
+// null until first fetched. The routing picker reads this; it is NEVER a source
+// of fabricated names -- mock => entries all null + mock:true (see server).
+let consoleNames = null;
+let consoleNamesLoading = false; // a read is in flight (Refresh button spinner state)
 
 // Canvas text does NOT wait for webfonts the way DOM text reflows
 // automatically -- on a cold load a map drawn before Clear Sans finishes
@@ -468,6 +473,7 @@ ws.onmessage = (e) => {
   if (event === 'loudness') { loudness = payload; renderLoudnessMeter(); }
   if (event === 'loudnessRead') renderLoudnessNote(payload);
   if (event === 'loudnessHistory') { loudnessHistory = payload; renderLoudnessHistory(); }
+  if (event === 'consoleNames') { consoleNames = payload; consoleNamesLoading = false; onConsoleNames(); }
   // setStatus() writes into #status, an element that only exists inside
   // #sessionView -- fine for the frequent play-by-play during an active
   // sweep (that inline text is genuinely nicer there, no need to toast on
@@ -484,6 +490,66 @@ ws.onmessage = (e) => {
   if (event === 'error') { setStatus(payload.message, 'warn'); if (statusHidden) showToast(payload.message, 'warn'); }
   if (event === 'info') { setStatus(payload.message, 'ok'); if (statusHidden) showToast(payload.message, 'ok'); }
 };
+
+/* --------------------------- console names ---------------------------- */
+// Names of the console's mains/matrices/buses, read live and cached. What the
+// UI shows is ALWAYS exactly what the console returned -- never a placeholder.
+
+/** Lazily load the cached console-name read the first time something needs it
+ *  (opening the routing picker). Does NOT re-hit a live console after that --
+ *  the Refresh button is the only thing that does. */
+async function ensureConsoleNames() {
+  if (consoleNames || consoleNamesLoading) return consoleNames;
+  consoleNamesLoading = true;
+  onConsoleNames();
+  try {
+    const res = await fetch('/api/console-names');
+    consoleNames = await res.json();
+  } catch { consoleNames = null; }
+  consoleNamesLoading = false;
+  onConsoleNames();
+  return consoleNames;
+}
+
+/** The manual "Refresh from console" action — the ONLY client path that makes
+ *  the server re-read a live console. */
+async function refreshConsoleNamesFromConsole() {
+  consoleNamesLoading = true;
+  onConsoleNames();
+  try {
+    const res = await fetch('/api/console-names/refresh', { method: 'POST' });
+    consoleNames = await res.json();
+  } catch { /* keep whatever we had; a broadcast may still arrive */ }
+  consoleNamesLoading = false;
+  onConsoleNames();
+  return consoleNames;
+}
+
+/** Console-supplied name for a destination, or null. The routing picker's one
+ *  lookup — null means "un-named / not read", so the caller shows the bare
+ *  designation. `kind` is 'main' | 'mtx' | 'bus'. */
+function consoleNameFor(kind, num) {
+  return consoleNames?.entries?.[kind]?.[num] ?? null;
+}
+
+/** Human "read 2 min ago" freshness string for the cache, or a status phrase
+ *  when there are no real names to show. */
+function consoleNamesFreshness() {
+  if (consoleNamesLoading) return 'reading console…';
+  if (!consoleNames) return 'not read yet';
+  if (consoleNames.mock) return 'mock — console names unavailable';
+  if (!consoleNames.ok) return "couldn't read console names — Refresh";
+  const ageMs = Date.now() - new Date(consoleNames.readAt).getTime();
+  const mins = Math.floor(ageMs / 60000);
+  const rel = mins < 1 ? 'just now' : mins === 1 ? '1 min ago' : `${mins} min ago`;
+  return `names read ${rel} · ${consoleNames.answered}/${consoleNames.total} answered`;
+}
+
+/** Re-render any on-screen routing picker when a new name read lands. Defined
+ *  by the routing-picker code (Workstream 2); a safe no-op until then. */
+function onConsoleNames() {
+  if (typeof refreshRoutingPickerUI === 'function') refreshRoutingPickerUI();
+}
 
 /** Compact bar+number meter, glanceable mid-service — not a graph. Visible
  *  whenever the monitor has a reading and settings isn't open (screen space). */

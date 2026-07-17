@@ -288,3 +288,56 @@ export function readValue(v) {
   if (!Array.isArray(v)) return v;
   return v.length > 1 ? v[v.length - 1] : v[0];
 }
+
+/* ------------------------- console name reading ------------------------- */
+//
+// The scribble-strip name of a main/matrix/bus/channel. The ONE address
+// builder + the ONE parser below are the single place name reads are shaped,
+// so if the real console reveals a different address form for main/mtx/bus
+// names, this file is the only edit (per the "fix in one place" rule).
+//
+// Confirmation status: /ch/N/name is CONFIRMED against the real console spec
+// (church visit 2026-07-10). /main/N/name, /mtx/N/name, /bus/N/name FOLLOW
+// that exact confirmed pattern but have NOT themselves been live-verified --
+// TODO(church): run scripts/read-console-names.mjs at the console to confirm,
+// then move them into CLAUDE.md's confirmed list. Until then the reader is
+// timeout-safe: a wrong address shape just yields a null (unanswered) name and
+// the UI shows the bare designation ("MTX 6"), never a guess.
+
+/** OSC address of a strip's scribble-strip name. `kind` is one of the config
+ *  wing.type tokens plus 'bus'/'ch': 'main' | 'mtx' | 'bus' | 'ch'. */
+export function nameAddress(kind, n) {
+  switch (kind) {
+    case 'main': return `/main/${n}/name`;
+    case 'mtx':  return `/mtx/${n}/name`;
+    case 'bus':  return `/bus/${n}/name`;
+    case 'ch':   return `/ch/${n}/name`;
+    default: throw new Error(`nameAddress: unknown kind "${kind}"`);
+  }
+}
+
+/** The console-surface designation for a destination, e.g. "MTX 6", "MAIN 1".
+ *  Matches the Wing surface's own capitalization (used verbatim in the picker,
+ *  the one place internal-looking tokens like "MTX" are allowed in the UI). */
+export function wingDesignation(kind, n) {
+  const token = { main: 'MAIN', mtx: 'MTX', bus: 'BUS', ch: 'CH' }[kind];
+  if (!token) throw new Error(`wingDesignation: unknown kind "${kind}"`);
+  return `${token} ${n}`;
+}
+
+/**
+ * Interpret a captured name reply into a clean display string, or null when
+ * there is no real console-supplied name. Deliberately NOT readValue(): a name
+ * is the STRING arg (the first element), never the numeric raw/last element
+ * readValue prefers -- a multi-element name reply must not silently resolve to
+ * a 0. Returns null for: no reply / timeout (`null`), a non-string arg, or an
+ * empty/whitespace name (an un-named strip -> caller shows the bare
+ * designation). NEVER invents a value -- null in, null out.
+ */
+export function readName(reply) {
+  if (reply === null || reply === undefined) return null;
+  const first = Array.isArray(reply) ? reply[0] : reply;
+  if (typeof first !== 'string') return null;
+  const trimmed = first.trim();
+  return trimmed.length ? trimmed : null;
+}

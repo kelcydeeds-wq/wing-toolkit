@@ -13,7 +13,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
 import { makeOscTransport } from '../src/wing/osc.js';
-import { MAIN_COUNT, MATRIX_COUNT, mainStrip, matrixStrip, readValue, physicalOutputPatchFields } from './wing-schema.mjs';
+import { MAIN_COUNT, MATRIX_COUNT, mainStrip, matrixStrip, readValue, readName, physicalOutputPatchFields } from './wing-schema.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
@@ -91,7 +91,9 @@ async function queryStrip(transport, strip, timeoutMs) {
   ]);
   return {
     kind: strip.kind, index: strip.index,
-    name: readValue(name),
+    // readName (not readValue): a name is the string arg, and an un-named /
+    // unanswered strip must resolve to null, never a fabricated fallback.
+    name: readName(name),
     mute: readValue(mute)
   };
 }
@@ -129,15 +131,19 @@ export async function identifyOutputs(args) {
   return { rows, table: formatTable(rows), ioOutHits };
 }
 
-/** Mock seed for --mock / tests: a plausible main+fill layout. */
+/** Mock seed for --mock / tests. Seeds ONLY mute states -- deliberately NO
+ *  names. Mock mode has no real console names, and fabricating example names
+ *  ("Main L", "Side Fills") would train the operator to trust text that never
+ *  came from hardware, so the mock name column stays empty ("(no reply)") on
+ *  purpose. See the no-fabricated-names rule in src/wing/console-names.js. */
 export function seedMockOutputs(transport) {
   const set = (address, value) => transport.send(address, [value]);
-  set('/main/1/name', 'Main L'); set('/main/1/mute', 0);
-  set('/main/2/name', 'Main R'); set('/main/2/mute', 0);
-  set('/main/3/name', 'Sub'); set('/main/3/mute', 0);
-  set('/main/4/name', 'Spare'); set('/main/4/mute', 1);
-  set('/mtx/1/name', 'Side Fills'); set('/mtx/1/mute', 0);
-  set('/mtx/2/name', 'Center Fill'); set('/mtx/2/mute', 0);
+  set('/main/1/mute', 0);
+  set('/main/2/mute', 0);
+  set('/main/3/mute', 0);
+  set('/main/4/mute', 1);
+  set('/mtx/1/mute', 0);
+  set('/mtx/2/mute', 0);
 }
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);

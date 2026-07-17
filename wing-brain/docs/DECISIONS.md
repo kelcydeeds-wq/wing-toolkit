@@ -3,6 +3,55 @@
 Running log of judgment calls made during autonomous work runs, so they can be
 reviewed and reversed if wrong.
 
+## 2026-07-17 — routing revamp, Workstream 1: console name reading (no fabricated names, ever)
+
+Foundation for the Wing-native routing picker: read main/matrix/bus
+scribble-strip names off the console and display ONLY what the console
+returned. The whole point is trust — a name the operator sees must have come
+from hardware or from their own speaker labels, never from us.
+
+- **`readName()` is a separate parser from `readValue()`, deliberately.**
+  `readValue()` prefers the LAST array element (the numeric raw value) — right
+  for on/off and numeric params, but a name is the STRING first element. A
+  multi-element name reply run through `readValue()` would silently resolve to
+  a trailing `0`. `readName()` takes the first arg, requires it be a string,
+  trims it, and maps empty/whitespace/non-string/no-reply all to `null`. Null
+  in, null out — it can never invent a value. Lives in `wing-schema.mjs`
+  alongside `nameAddress()` (the one address builder) so a corrected address
+  shape is a single-file edit (the "fix in one place" rule).
+- **Mock mode short-circuits before touching a transport.**
+  `readConsoleNames({mock:true})` returns the all-null shape flagged
+  `mock:true` without any I/O — so even a transport seeded with realistic
+  names cannot leak one (there's a test asserting exactly that). This is the
+  hard no-fabricated-names guarantee. It also drove a real fix to
+  **pre-existing** debt: `identify-outputs.mjs`'s `seedMockOutputs()` used to
+  seed fake `/main/1/name = "Main L"`, `/mtx/1/name = "Side Fills"` etc., which
+  `/api/discover-outputs` surfaced to the UI in mock mode — precisely the
+  "trains the user to trust text that never came from hardware" anti-pattern.
+  Stripped every name seed there (kept mute seeds — mute is real state, not a
+  fabricated identity); its tests now assert no `/name` address is ever seeded.
+- **`/mtx/N/name` and `/bus/N/name` are NOT marked confirmed.** Only
+  `/main/N/name` inherits the confirmed `/ch/N/name` pattern with confidence;
+  the other two follow the same shape but are unverified, so they stay
+  TODO(church) in `wing-schema.mjs` and are NOT added to CLAUDE.md's confirmed
+  list yet. `scripts/read-console-names.mjs` (new) dumps all three in one pass
+  as the ~30-second at-console verification (added to CHECKLIST.md). The reader
+  is timeout-safe, so a wrong `/bus` shape just yields nulls and the picker
+  shows bare designations — it degrades, never blocks.
+- **`ok` vs `mock` are distinct fail states.** `mock:true` = names unavailable
+  by definition (UI: "mock — console names unavailable"). Live with
+  `answered === 0` = `ok:false` (UI: "couldn't read console names — Refresh").
+  Live with `answered > 0` = `ok:true`, and individual empty names still show
+  as bare designations. Failing loud beats silently showing an empty state as
+  if it were real.
+- **Cached per session, never polled.** The server holds one `consoleNames`
+  read, filled lazily on first `GET /api/console-names`, re-read only on
+  `POST /api/console-names/refresh` (the manual button). Invalidated inside
+  `buildRuntime()` because a mode/host change makes the prior read meaningless.
+- **Added a `PORT` env override to `server.js`** (mirrors the existing `MODE`
+  override) so a second instance can boot for testing without editing config —
+  used to HTTP-verify the endpoints while the primary instance held :3000.
+
 ## 2026-07-17 — Room Map: Configure flow for orphaned speakers + shared-driver isolation testing
 
 Previously, a map point with no `physicalOutput` referencing it just showed a

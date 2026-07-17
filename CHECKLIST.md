@@ -71,6 +71,17 @@ buffer/driver tuning → SuperRack fallback (architecture doc already covers it)
    and advisor reasoning around the sub/main handoff region; it never writes
    an actual crossover filter, so this stays an open physical signal-chain
    question until confirmed on-site.
+10. TODO(church): **confirm the main/mtx/bus name-read addresses** (~30 sec).
+    Run `node scripts/read-console-names.mjs --host <wing-ip>` and compare the
+    printed names against the console's scribble strips. `/main/N/name` is
+    confirmed; `/mtx/N/name` and `/bus/N/name` follow the same confirmed
+    `/ch/N/name` pattern but are not yet live-verified. If a whole KIND comes
+    back "(no reply)" while its strips are named on the surface, fix
+    `nameAddress()` in `scripts/wing-schema.mjs` (the single place) from the
+    console's OSC docs. Once the printed names match, move those addresses into
+    CLAUDE.md's confirmed list. The routing picker degrades safely until then
+    (shows bare designations like "MTX 6"), so this is verification, not a
+    blocker.
 
 ## RESULTS (fill in)
 
