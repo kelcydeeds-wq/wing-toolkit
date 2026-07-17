@@ -44,8 +44,18 @@
   .row{display:flex; gap:10px}
   .row>button{flex:1}
 
-  #roomMap,#roomMap2,#roomMapEdit{width:100%; border-radius:10px; background:var(--panel2); display:block}
-  #roomMapEdit{touch-action:none}
+  #roomMap,#roomMap2,#roomMapEdit{width:100%; border-radius:10px; background:var(--panel2); display:block;
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.03), inset 0 0 0 1px rgba(0,0,0,.4), inset 0 18px 34px -26px rgba(0,0,0,.8);}
+  #roomMapEdit{touch-action:none; cursor:grab}
+  #roomMapEdit.dragging{cursor:grabbing}
+  .mapwrap{position:relative}
+  /* CSS-driven pulse (not a canvas rAF loop) for the "you are here" marker
+     during a live session -- GPU-compositable, costs nothing on battery
+     while the phone sits at a mic stand for the length of a Full Tune. */
+  #posHalo{position:absolute; width:36px; height:36px; margin:-18px 0 0 -18px;
+    border-radius:50%; background:radial-gradient(circle, rgba(255,180,84,.5), rgba(255,180,84,0) 70%);
+    pointer-events:none; animation:halo 1.6s ease-in-out infinite}
+  @keyframes halo{0%,100%{opacity:.85; transform:scale(1)} 50%{opacity:.25; transform:scale(1.7)}}
   .poslist{margin:10px 0 0; padding:0; list-style:none}
   .poslist li{display:flex; justify-content:space-between; padding:7px 2px;
     border-bottom:1px dashed var(--line); color:var(--dim); font-size:14px}
@@ -97,11 +107,13 @@
   #wingBanner.okb{background:rgba(93,211,158,.08); border-color:var(--green); color:var(--green)}
   #wingBanner.warnb{background:rgba(255,107,94,.08); border-color:var(--red); color:var(--red)}
   #wingBanner.dimb{background:var(--panel); border-color:var(--amber); color:var(--amber)}
-  #toast{position:fixed; left:50%; transform:translateX(-50%); bottom:96px; z-index:10;
+  #toast{position:fixed; left:50%; bottom:96px; z-index:10;
     max-width:90vw; background:var(--panel2); border:1px solid var(--line); color:var(--ink);
     border-radius:10px; padding:10px 16px; font-size:14px; opacity:0; pointer-events:none;
-    transition:opacity .25s}
-  #toast.show{opacity:1}
+    box-shadow:0 10px 26px -12px rgba(0,0,0,.6);
+    transform:translate(-50%, 6px) scale(.97);
+    transition:opacity .22s, transform .22s cubic-bezier(.2,.8,.3,1)}
+  #toast.show{opacity:1; transform:translate(-50%, 0) scale(1)}
   #toast.ok{border-color:var(--green); color:var(--green)}
   #toast.warn{border-color:var(--red); color:var(--red)}
   .otable{overflow-x:auto}
@@ -110,6 +122,27 @@
   .otable select{width:auto; padding:6px}
   .otable td{white-space:nowrap}
   .grid2{display:grid; grid-template-columns:1fr 1fr; gap:4px 16px}
+
+  /* --- interactive room map: toolbar + floating panels --- */
+  .maptoolbar{display:flex; align-items:center; justify-content:space-between; gap:10px; margin-top:10px}
+  .maptoolbar .maphint{font-size:12px; color:var(--dim)}
+  #btnRoomAddToggle{width:auto; flex:0 0 auto; padding:8px 16px 8px 13px; border-radius:999px;
+    display:inline-flex; align-items:center; gap:6px; transition:background .15s,color .15s,transform .1s}
+  #btnRoomAddToggle:active{transform:scale(.96)}
+  #btnRoomAddToggle .plus{font-size:15px; font-weight:800; line-height:1}
+  @keyframes panelIn{from{opacity:0; transform:translateY(-6px) scale(.985)} to{opacity:1; transform:translateY(0) scale(1)}}
+  #roomAddPanel:not(:empty),#roomGearPanel:not(:empty){margin-top:10px}
+  #roomAddPanel .card,#roomGearPanel .card{
+    background:linear-gradient(180deg, var(--panel2), var(--panel));
+    box-shadow:0 10px 28px -14px rgba(0,0,0,.55), 0 0 0 1px rgba(255,255,255,.02) inset;
+    animation:panelIn .18s cubic-bezier(.2,.8,.3,1) both;
+  }
+  #roomAddPanel .card h3,#roomGearPanel .card h3{font-size:12px; letter-spacing:.1em; text-transform:uppercase;
+    color:var(--dim); font-weight:600; display:flex; align-items:center; justify-content:space-between}
+  #roomAddPanel > .frow{animation:panelIn .18s cubic-bezier(.2,.8,.3,1) both}
+  .swatch{display:inline-block; width:9px; height:9px; border-radius:2px; margin-right:6px; vertical-align:1px}
+  @keyframes placepulse{0%,100%{opacity:1; transform:scale(1)} 50%{opacity:.4; transform:scale(.8)}}
+  .placepulse{display:inline-block; color:var(--amber); animation:placepulse 1.1s ease-in-out infinite}
 
   /* --- loudness meter: glanceable, not a graph --- */
   #loudnessMeter{border-radius:10px; padding:8px 12px; margin:-6px 0 14px;
@@ -206,7 +239,7 @@
   <section id="sessionView" class="hidden">
     <div class="card">
       <h2 id="posTitle">Position</h2>
-      <canvas id="roomMap2" width="560" height="380"></canvas>
+      <div class="mapwrap"><canvas id="roomMap2" width="560" height="380"></canvas><div id="posHalo" class="hidden"></div></div>
       <p id="posHint" style="color:var(--dim); font-size:14px; margin:10px 0 0"></p>
       <div id="status"></div>
     </div>
@@ -417,7 +450,7 @@ function render(){
     return;
   }
 
-  if (!session || session.state === 'idle') { show('home'); renderPreflightSummary(); return; }
+  if (!session || session.state === 'idle') { show('home'); renderPreflightSummary(); $('posHalo')?.classList.add('hidden'); return; }
 
   if (session.state === 'waiting_position' || session.state === 'measuring') {
     show('sessionView');
@@ -425,6 +458,7 @@ function render(){
     $('posTitle').textContent = `Position ${session.posIndex+1} of ${session.positions.length} — ${cur?.label ?? ''}`;
     $('posHint').textContent = 'Move the mic to the highlighted spot, mic at ear height, pointed up. Keep clear of the mic during the sweep.';
     drawRoom($('roomMap2'), cur?.id);
+    updatePosHalo($('roomMap2'), room, cur?.id);
 
     if (session.state === 'waiting_position') {
       const b = mkBtn('READY — RUN SWEEP', 'big green', () => send({action:'ready'}));
@@ -691,6 +725,106 @@ function roomDiscoveryDefaultPos(rm){
   return { x: (minX + maxX) / 2 + offsetCount * 0.5, y: (minY + maxY) / 2 };
 }
 
+/* ---- small canvas primitives shared by every room-map glyph below ---- */
+
+function roundRectPath(ctx, x, y, w, h, r){
+  ctx.beginPath();
+  ctx.moveTo(x+r, y);
+  ctx.arcTo(x+w, y, x+w, y+h, r);
+  ctx.arcTo(x+w, y+h, x, y+h, r);
+  ctx.arcTo(x, y+h, x, y, r);
+  ctx.arcTo(x, y, x+w, y, r);
+  ctx.closePath();
+}
+
+/** Small rounded, semi-opaque pill behind a text label so it stays legible
+ *  over the grid/floor regardless of what's underneath it -- labels never
+ *  fight the background, a small detail that reads as "finished" rather
+ *  than "text floating on a canvas". */
+function drawLabelPill(ctx, text, x, y, opts = {}){
+  const { color = 'rgba(232,230,225,.75)', bg = 'rgba(12,14,16,.68)', font = '11px ui-monospace', align = 'left' } = opts;
+  ctx.font = font;
+  const tw = ctx.measureText(text).width;
+  const px = align === 'center' ? x - tw/2 : x;
+  ctx.fillStyle = bg;
+  roundRectPath(ctx, px - 5, y - 9, tw + 10, 15, 5);
+  ctx.fill();
+  ctx.fillStyle = color;
+  ctx.fillText(text, px, y + 2);
+}
+
+/** Refined speaker glyph: a small rounded cabinet + driver cone with a soft
+ *  drop shadow, replacing the old flat triangle. `scale` > 1 gives a subtle
+ *  "lifted" cue while the icon is being dragged. */
+function drawSpeakerGlyph(ctx, x, y, color, scale = 1){
+  const w = 15 * scale, h = 15 * scale;
+  ctx.save();
+  ctx.shadowColor = 'rgba(0,0,0,.55)'; ctx.shadowBlur = 6 * scale; ctx.shadowOffsetY = 2 * scale;
+  ctx.fillStyle = color;
+  roundRectPath(ctx, x - w/2, y - h/2, w, h, 4 * scale);
+  ctx.fill();
+  ctx.restore();
+  ctx.strokeStyle = 'rgba(255,255,255,.28)'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.moveTo(x - w/2 + 3, y - h/2 + 1.5); ctx.lineTo(x + w/2 - 3, y - h/2 + 1.5); ctx.stroke();
+  ctx.fillStyle = 'rgba(12,14,16,.55)';
+  ctx.beginPath(); ctx.arc(x, y + scale, 3.4 * scale, 0, Math.PI*2); ctx.fill();
+  ctx.strokeStyle = 'rgba(255,255,255,.22)'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.arc(x, y + scale, 1.3 * scale, 0, Math.PI*2); ctx.stroke();
+}
+
+/** Refined measurement-position marker: shadowed ring + filled center,
+ *  replacing the old flat dot. `ring` (0-1, optional) draws an expanding
+ *  highlight ring at that phase, for the currently-highlighted position. */
+function drawPositionGlyph(ctx, x, y, color, radius, opts = {}){
+  const { ring = null, ringColor = color } = opts;
+  ctx.save();
+  ctx.shadowColor = 'rgba(0,0,0,.5)'; ctx.shadowBlur = 5; ctx.shadowOffsetY = 1.5;
+  ctx.beginPath(); ctx.arc(x, y, radius, 0, Math.PI*2);
+  ctx.fillStyle = color; ctx.fill();
+  ctx.restore();
+  ctx.strokeStyle = 'rgba(255,255,255,.24)'; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.arc(x, y, radius, 0, Math.PI*2); ctx.stroke();
+  ctx.beginPath(); ctx.arc(x, y, radius * 0.4, 0, Math.PI*2);
+  ctx.fillStyle = 'rgba(12,14,16,.5)'; ctx.fill();
+  if (ring !== null) {
+    ctx.strokeStyle = ringColor; ctx.lineWidth = 2;
+    ctx.globalAlpha = 0.5 * (1 - ring);
+    ctx.beginPath(); ctx.arc(x, y, radius + 5 + ring * 12, 0, Math.PI*2); ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+}
+
+/** Fine 1m reference grid clipped to the room polygon, plus a scale bar --
+ *  turns a flat colored polygon into something that reads as surveyed
+ *  geometry, not a placeholder shape. Deliberately very low-contrast so it
+ *  never competes with speakers/positions/labels sitting on top of it. */
+function drawRoomGrid(ctx, cv, proj){
+  const { X, Y, pts, minX, maxX, minY, maxY, s, PAD } = proj;
+  ctx.save();
+  ctx.beginPath();
+  pts.forEach((p,i)=> i?ctx.lineTo(X(p[0]),Y(p[1])):ctx.moveTo(X(p[0]),Y(p[1])));
+  ctx.closePath();
+  ctx.clip();
+  ctx.strokeStyle = 'rgba(255,255,255,.04)';
+  ctx.lineWidth = 1;
+  for (let gx = Math.floor(minX); gx <= Math.ceil(maxX); gx++) {
+    ctx.beginPath(); ctx.moveTo(X(gx), Y(minY)); ctx.lineTo(X(gx), Y(maxY)); ctx.stroke();
+  }
+  for (let gy = Math.floor(minY); gy <= Math.ceil(maxY); gy++) {
+    ctx.beginPath(); ctx.moveTo(X(minX), Y(gy)); ctx.lineTo(X(maxX), Y(gy)); ctx.stroke();
+  }
+  ctx.restore();
+
+  const barM = s > 22 ? 1 : s > 11 ? 2 : 5; // a round meter length that stays a sane pixel length at any zoom
+  const bx = PAD + 2, by = cv.height - 9;
+  ctx.strokeStyle = 'rgba(255,255,255,.3)'; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(bx, by); ctx.lineTo(bx + barM*s, by); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(bx, by-3); ctx.lineTo(bx, by+3); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(bx+barM*s, by-3); ctx.lineTo(bx+barM*s, by+3); ctx.stroke();
+  ctx.fillStyle = 'rgba(255,255,255,.42)'; ctx.font = '9px ui-monospace';
+  ctx.fillText(`${barM} m`, bx, by-6);
+}
+
 /** Walls/stage/balcony/booth — the static backdrop shared by every room
  *  canvas (read-only home map, in-session map, interactive Settings editor). */
 function drawRoomStatic(ctx, cv, rm, proj){
@@ -700,34 +834,34 @@ function drawRoomStatic(ctx, cv, rm, proj){
   ctx.beginPath();
   pts.forEach((p,i)=> i?ctx.lineTo(X(p[0]),Y(p[1])):ctx.moveTo(X(p[0]),Y(p[1])));
   ctx.closePath();
-  ctx.fillStyle = '#171b20'; ctx.fill();
+  const floorGrad = ctx.createRadialGradient(cv.width*0.5,cv.height*0.42,10, cv.width*0.5,cv.height*0.5,cv.width*0.75);
+  floorGrad.addColorStop(0, '#1a1e24'); floorGrad.addColorStop(1, '#14171b');
+  ctx.fillStyle = floorGrad; ctx.fill();
   ctx.strokeStyle = '#3a4048'; ctx.lineWidth = 2; ctx.stroke();
 
+  drawRoomGrid(ctx, cv, proj);
   ctx.font = '11px ui-monospace';
 
   if (rm.stage) {
     const g = rm.stage;
     ctx.fillStyle = '#22262d';
     ctx.fillRect(X(g.x), Y(g.y), g.w*s, g.h*s);
-    ctx.fillStyle = '#8b919a';
-    ctx.fillText('STAGE', X(g.x)+8, Y(g.y)+16);
+    drawLabelPill(ctx, 'STAGE', X(g.x)+8, Y(g.y)+15, { color:'rgba(139,145,154,.9)', font:'bold 10px ui-monospace' });
   }
   if (rm.balcony) {
     const b = rm.balcony;
-    ctx.fillStyle = 'rgba(255,180,84,0.08)';
+    ctx.fillStyle = 'rgba(255,180,84,0.07)';
     ctx.fillRect(X(b.x), Y(b.y), b.w*s, b.h*s);
-    ctx.strokeStyle = 'rgba(255,180,84,0.5)'; ctx.setLineDash([6,4]);
+    ctx.strokeStyle = 'rgba(255,180,84,0.45)'; ctx.setLineDash([6,4]);
     ctx.strokeRect(X(b.x), Y(b.y), b.w*s, b.h*s);
     ctx.setLineDash([]);
-    ctx.fillStyle = 'rgba(255,180,84,0.7)';
-    ctx.fillText('BALCONY (above)', X(b.x)+6, Y(b.y)+14);
+    drawLabelPill(ctx, 'BALCONY (above)', X(b.x)+6, Y(b.y)+13, { color:'rgba(255,180,84,.85)', font:'bold 10px ui-monospace' });
   }
   if (rm.booth) {
     const b = rm.booth;
     ctx.strokeStyle = '#3a4048';
     ctx.strokeRect(X(b.x), Y(b.y), b.w*s, b.h*s);
-    ctx.fillStyle = '#5a616b';
-    ctx.fillText('FOH', X(b.x)+4, Y(b.y)-4);
+    drawLabelPill(ctx, 'FOH', X(b.x)+4, Y(b.y)-5, { color:'rgba(139,145,154,.9)', font:'bold 10px ui-monospace' });
   }
 }
 
@@ -741,29 +875,39 @@ function drawRoom(cv, highlightId){
   // Speakers
   for (const sp of room.speakers || []) {
     const x = X(sp.x), y = Y(sp.y);
-    ctx.fillStyle = sp.id.startsWith('fill') ? '#6ab7ff' : '#ff6b5e';
-    ctx.beginPath();
-    ctx.moveTo(x, y-6); ctx.lineTo(x+6, y+5); ctx.lineTo(x-6, y+5);
-    ctx.closePath(); ctx.fill();
+    drawSpeakerGlyph(ctx, x, y, sp.id.startsWith('fill') ? '#6ab7ff' : '#ff6b5e');
   }
   // Positions
   for (const p of room.positions) {
     const x = X(p.x), y = Y(p.y);
     const isHi = p.id === highlightId;
-    ctx.beginPath();
-    ctx.arc(x, y, isHi ? 13 : 7, 0, Math.PI*2);
-    ctx.fillStyle = isHi ? '#ffb454' : (p.zone==='balcony' ? '#7a6a4a' : p.zone==='under_balcony' ? '#4a5568' : '#3a4048');
-    ctx.fill();
-    if (isHi) { ctx.strokeStyle='#ffb454'; ctx.lineWidth=2;
-      ctx.beginPath(); ctx.arc(x, y, 20, 0, Math.PI*2); ctx.stroke(); }
-    ctx.fillStyle = isHi ? '#ffb454' : '#8b919a';
-    const tw = ctx.measureText(p.label).width;
+    const color = isHi ? '#ffb454' : (p.zone==='balcony' ? '#7a6a4a' : p.zone==='under_balcony' ? '#4a5568' : '#3a4048');
+    drawPositionGlyph(ctx, x, y, color, isHi ? 10 : 7);
+    const labelColor = isHi ? 'rgba(255,180,84,.95)' : 'rgba(232,230,225,.7)';
     if (Math.abs(p.x - room.width / 2) < 0.3) {
-      ctx.fillText(p.label, x - tw/2, y + (isHi ? 34 : 22)); // on-center: label centered below dot
+      drawLabelPill(ctx, p.label, x, y + (isHi ? 30 : 21), { align:'center', color: labelColor });
     } else {
-      ctx.fillText(p.label, x+16+tw > cv.width-6 ? x-16-tw : x+16, y+4); // side: flip at right edge
+      const tw = ctx.measureText(p.label).width;
+      const goesLeft = x+16+tw > cv.width-6;
+      drawLabelPill(ctx, p.label, goesLeft ? x-16-tw : x+16, y+3, { color: labelColor });
     }
   }
+}
+
+/** Positions (or hides) the CSS-animated "you are here" halo over the
+ *  in-session map at the highlighted position's projected pixel location.
+ *  A GPU-compositable div pulse instead of a canvas rAF loop -- this runs
+ *  for the length of a live session on a phone at a mic stand, so it costs
+ *  nothing on battery rather than redrawing the whole canvas every frame. */
+function updatePosHalo(cv, rm, posId){
+  const halo = $('posHalo');
+  if (!halo) return;
+  const pos = posId && rm?.positions?.find((p) => p.id === posId);
+  if (!cv || !pos) { halo.classList.add('hidden'); return; }
+  const proj = roomProjection(rm, cv);
+  halo.style.left = `${(proj.X(pos.x) / cv.width) * 100}%`;
+  halo.style.top = `${(proj.Y(pos.y) / cv.height) * 100}%`;
+  halo.classList.remove('hidden');
 }
 
 /* ---------- interactive room editor (Settings page, Stage 2) ---------- */
@@ -801,32 +945,49 @@ function findOutputForSpeaker(speakerId, physicalOutputs){
   return null;
 }
 
+/** Round power-toggle chip -- a filled dark disc, colored ring, and a power
+ *  glyph (arc + tick) instead of the old flat checkbox square, matched in
+ *  size/weight to drawGearGlyph so the two overlay controls read as one
+ *  designed pair rather than two unrelated bits of chrome. */
 function drawToggleGlyph(ctx, cx, cy, enabled){
+  ctx.save();
+  ctx.shadowColor = 'rgba(0,0,0,.5)'; ctx.shadowBlur = 4; ctx.shadowOffsetY = 1;
   ctx.fillStyle = '#0c0e10';
-  ctx.strokeStyle = enabled ? '#5dd39e' : '#8b919a';
+  ctx.beginPath(); ctx.arc(cx, cy, 8, 0, Math.PI*2); ctx.fill();
+  ctx.restore();
+  ctx.strokeStyle = enabled ? '#5dd39e' : '#5a616b';
   ctx.lineWidth = 1.5;
-  ctx.beginPath(); ctx.rect(cx-6, cy-6, 12, 12); ctx.fill(); ctx.stroke();
-  if (enabled) {
-    ctx.strokeStyle = '#5dd39e'; ctx.lineWidth = 1.7;
-    ctx.beginPath(); ctx.moveTo(cx-3, cy); ctx.lineTo(cx-1, cy+3); ctx.lineTo(cx+4, cy-3); ctx.stroke();
-  }
+  ctx.beginPath(); ctx.arc(cx, cy, 8, 0, Math.PI*2); ctx.stroke();
+  ctx.strokeStyle = enabled ? '#5dd39e' : '#8b919a';
+  ctx.lineWidth = 1.6; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.arc(cx, cy+0.5, 3.6, 0.35*Math.PI, 1.65*Math.PI); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(cx, cy-3.4); ctx.lineTo(cx, cy-0.4); ctx.stroke();
+  ctx.lineCap = 'butt';
 }
 
 /** Small gear glyph (Stage 4) -- opens the settings panel for the icon it's
  *  attached to. Same visual language as drawToggleGlyph (dark chip, thin
- *  stroke) so the two overlay glyphs read as a matched pair. */
+ *  stroke, matched radius) so the two overlay glyphs read as a matched pair. */
 function drawGearGlyph(ctx, cx, cy, active){
+  ctx.save();
+  ctx.shadowColor = 'rgba(0,0,0,.5)'; ctx.shadowBlur = 4; ctx.shadowOffsetY = 1;
   ctx.fillStyle = '#0c0e10';
-  ctx.strokeStyle = active ? '#ffb454' : '#8b919a';
+  ctx.beginPath(); ctx.arc(cx, cy, 8, 0, Math.PI*2); ctx.fill();
+  ctx.restore();
+  ctx.strokeStyle = active ? '#ffb454' : '#5a616b';
   ctx.lineWidth = 1.5;
-  ctx.beginPath(); ctx.arc(cx, cy, 7, 0, Math.PI*2); ctx.fill(); ctx.stroke();
-  ctx.beginPath(); ctx.arc(cx, cy, 2.6, 0, Math.PI*2); ctx.stroke();
+  ctx.beginPath(); ctx.arc(cx, cy, 8, 0, Math.PI*2); ctx.stroke();
+  ctx.strokeStyle = active ? '#ffb454' : '#8b919a';
+  ctx.lineWidth = 1.4; ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.arc(cx, cy, 2.8, 0, Math.PI*2); ctx.stroke();
   for (let i = 0; i < 6; i++) {
     const a = (i / 6) * Math.PI * 2;
-    const x1 = cx + Math.cos(a) * 5, y1 = cy + Math.sin(a) * 5;
-    const x2 = cx + Math.cos(a) * 7.5, y2 = cy + Math.sin(a) * 7.5;
-    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(cx + Math.cos(a) * 4.6, cy + Math.sin(a) * 4.6);
+    ctx.lineTo(cx + Math.cos(a) * 6.6, cy + Math.sin(a) * 6.6);
+    ctx.stroke();
   }
+  ctx.lineCap = 'butt';
 }
 
 function drawRoomInteractive(cv){
@@ -847,45 +1008,47 @@ function drawRoomInteractive(cv){
     const x = X(wx), y = Y(wy);
     const out = findOutputForSpeaker(sp.id, C.physicalOutputs);
     const enabled = out ? out.enabled !== false : true;
+    // Dragging lifts the icon: bigger + stronger shadow, same "picked up off
+    // the table" cue a CAD/design tool gives you, plus a live coordinate
+    // readout so a drag doubles as a precise measurement tool.
+    const scale = dragging ? 1.35 : 1;
 
     ctx.globalAlpha = enabled ? 1 : 0.35;
-    ctx.fillStyle = sp.id.startsWith('fill') ? '#6ab7ff' : '#ff6b5e';
-    ctx.beginPath();
-    ctx.moveTo(x, y-7); ctx.lineTo(x+7, y+6); ctx.lineTo(x-7, y+6);
-    ctx.closePath(); ctx.fill();
+    drawSpeakerGlyph(ctx, x, y, sp.id.startsWith('fill') ? '#6ab7ff' : '#ff6b5e', scale);
     ctx.globalAlpha = 1;
+    if (dragging) drawLabelPill(ctx, `${wx.toFixed(2)}, ${wy.toFixed(2)} m`, x, y - 22, { color:'rgba(255,180,84,.95)' });
 
     roomEditHitTargets.push({ kind: 'speaker', id: sp.id, cx: x, cy: y, r: 14 });
     if (out) {
-      const tx = x+13, ty = y-13;
+      const tx = x+14, ty = y-14;
       drawToggleGlyph(ctx, tx, ty, enabled);
       roomEditToggleTargets.push({ kind: 'speaker', id: sp.id, output: out, cx: tx, cy: ty });
     }
-    const gx = x-13, gy = y-13;
+    const gx = x-14, gy = y-14;
     const gearActive = roomGearPanel?.kind === 'speaker' && roomGearPanel.id === sp.id;
     drawGearGlyph(ctx, gx, gy, gearActive);
     roomEditGearTargets.push({ kind: 'speaker', id: sp.id, cx: gx, cy: gy });
 
     // Stage 5: needsPositioning speakers (freshly created from discovery,
-    // never dragged) get an unmissable dashed amber ring + "!" badge + label
-    // -- distinct from both the normal look and the dimmed/disabled look
-    // above, since the whole point is the user notices and drags it.
+    // never dragged) get an unmissable dashed amber ring + badge + label --
+    // distinct from both the normal look and the dimmed/disabled look above,
+    // since the whole point is the user notices and drags it.
     if (sp.needsPositioning === true) {
       ctx.save();
       ctx.strokeStyle = '#ffb454';
       ctx.lineWidth = 2;
       ctx.setLineDash([4, 3]);
-      ctx.beginPath(); ctx.arc(x, y, 18, 0, Math.PI*2); ctx.stroke();
-      ctx.setLineDash([]);
+      ctx.beginPath(); ctx.arc(x, y, 19, 0, Math.PI*2); ctx.stroke();
+      ctx.restore();
+      ctx.save();
+      ctx.shadowColor = 'rgba(0,0,0,.5)'; ctx.shadowBlur = 4;
       ctx.fillStyle = '#ffb454';
-      ctx.beginPath(); ctx.arc(x, y+6, 6, 0, Math.PI*2); ctx.fill();
+      ctx.beginPath(); ctx.arc(x, y+7, 6.5, 0, Math.PI*2); ctx.fill();
+      ctx.restore();
       ctx.fillStyle = '#0c0e10';
       ctx.font = 'bold 9px ui-monospace';
-      ctx.fillText('!', x-1.5, y+9);
-      ctx.fillStyle = '#ffb454';
-      ctx.font = 'bold 11px ui-monospace';
-      ctx.fillText('needs positioning', x+20, y+20);
-      ctx.restore();
+      ctx.fillText('!', x-1.5, y+10);
+      drawLabelPill(ctx, 'needs positioning', x+21, y+22, { color:'rgba(255,180,84,.95)', font:'bold 10px ui-monospace' });
     }
   }
 
@@ -894,23 +1057,21 @@ function drawRoomInteractive(cv){
     const wx = dragging ? roomEditDrag.curX : p.x, wy = dragging ? roomEditDrag.curY : p.y;
     const x = X(wx), y = Y(wy);
     const enabled = p.enabled !== false;
+    const color = p.zone==='balcony' ? '#7a6a4a' : p.zone==='under_balcony' ? '#4a5568' : '#3a4048';
 
     ctx.globalAlpha = enabled ? 1 : 0.35;
-    ctx.beginPath();
-    ctx.arc(x, y, 8, 0, Math.PI*2);
-    ctx.fillStyle = p.zone==='balcony' ? '#7a6a4a' : p.zone==='under_balcony' ? '#4a5568' : '#3a4048';
-    ctx.fill();
-    ctx.fillStyle = '#8b919a';
+    drawPositionGlyph(ctx, x, y, color, dragging ? 11 : 8);
     ctx.font = '11px ui-monospace';
     const tw = ctx.measureText(p.label).width;
-    ctx.fillText(p.label, x+16+tw > cv.width-6 ? x-16-tw : x+16, y+4);
+    drawLabelPill(ctx, p.label, x+16+tw > cv.width-6 ? x-16-tw : x+16, y+3, { color:'rgba(232,230,225,.7)' });
     ctx.globalAlpha = 1;
+    if (dragging) drawLabelPill(ctx, `${wx.toFixed(2)}, ${wy.toFixed(2)} m`, x, y - 22, { color:'rgba(255,180,84,.95)' });
 
     roomEditHitTargets.push({ kind: 'position', id: p.id, cx: x, cy: y, r: 15 });
-    const tx = x+15, ty = y-15;
+    const tx = x+16, ty = y-16;
     drawToggleGlyph(ctx, tx, ty, enabled);
     roomEditToggleTargets.push({ kind: 'position', id: p.id, cx: tx, cy: ty });
-    const gx = x-15, gy = y-15;
+    const gx = x-16, gy = y-16;
     const gearActive = roomGearPanel?.kind === 'position' && roomGearPanel.id === p.id;
     drawGearGlyph(ctx, gx, gy, gearActive);
     roomEditGearTargets.push({ kind: 'position', id: p.id, cx: gx, cy: gy });
@@ -1020,13 +1181,13 @@ function wireRoomEditor(cv){
       return;
     }
 
-    const gear = roomEditGearTargets.find((t) => Math.hypot(t.cx-pt.x, t.cy-pt.y) <= 11);
+    const gear = roomEditGearTargets.find((t) => Math.hypot(t.cx-pt.x, t.cy-pt.y) <= 12);
     if (gear) {
       e.preventDefault();
       openRoomGearPanel(gear.kind, gear.id);
       return;
     }
-    const toggle = roomEditToggleTargets.find((t) => Math.hypot(t.cx-pt.x, t.cy-pt.y) <= 11);
+    const toggle = roomEditToggleTargets.find((t) => Math.hypot(t.cx-pt.x, t.cy-pt.y) <= 12);
     if (toggle) {
       e.preventDefault();
       toggleRoomEnabled(toggle);
@@ -1041,6 +1202,7 @@ function wireRoomEditor(cv){
       : appConfig.room.positions.find((p) => p.id === hit.id);
     if (!entity) return;
     roomEditDrag = { kind: hit.kind, id: hit.id, curX: entity.x, curY: entity.y, pointerId: e.pointerId };
+    cv.classList.add('dragging');
     drawRoomInteractive(cv);
   });
 
@@ -1055,6 +1217,7 @@ function wireRoomEditor(cv){
   });
 
   const endDrag = (e) => {
+    cv.classList.remove('dragging');
     if (!roomEditDrag || roomEditDrag.pointerId !== e.pointerId) return;
     const { kind, id, curX, curY } = roomEditDrag;
     roomEditDrag = null;
@@ -1137,22 +1300,29 @@ function renderRoomAddPanel(){
   if (!roomAddMode) { panel.innerHTML = ''; return; }
 
   if (!roomAddMode.kind) {
-    panel.innerHTML = `<div class="frow" style="gap:8px">
-      <button class="small secondary" id="btnAddKindSpeaker">Speaker</button>
-      <button class="small secondary" id="btnAddKindPosition">Position</button>
-    </div>`;
+    panel.innerHTML = `<div class="card"><h3>Add to map<button class="small secondary" id="btnAddCancel" style="width:auto;padding:4px 10px">✕</button></h3>
+      <div class="frow" style="gap:8px">
+        <button class="small secondary" id="btnAddKindSpeaker">▲ Speaker</button>
+        <button class="small secondary" id="btnAddKindPosition">● Position</button>
+      </div></div>`;
+    $('btnAddCancel').onclick = () => setRoomAddMode(null);
     $('btnAddKindSpeaker').onclick = () => setRoomAddMode({ kind: 'speaker', placed: false });
     $('btnAddKindPosition').onclick = () => setRoomAddMode({ kind: 'position', placed: false });
     return;
   }
 
   if (!roomAddMode.placed) {
-    panel.innerHTML = `<p class="hint">Tap the map to place the new ${esc(roomAddMode.kind)}.</p>`;
+    panel.innerHTML = `<div class="card">
+      <h3>Placing ${esc(roomAddMode.kind)}<button class="small secondary" id="btnAddCancel" style="width:auto;padding:4px 10px">✕</button></h3>
+      <p class="hint" style="margin:0"><span class="placepulse">◎</span> Tap the map to place the new ${esc(roomAddMode.kind)}.</p>
+    </div>`;
+    $('btnAddCancel').onclick = () => setRoomAddMode(null);
     return;
   }
 
   if (roomAddMode.kind === 'position') {
-    panel.innerHTML = `
+    panel.innerHTML = `<div class="card">
+      <h3>New position</h3>
       <div class="frow"><label>Label</label><input type="text" id="addPosLabel" placeholder="e.g. Front Center"></div>
       <div class="frow"><label>Zone</label><select id="addPosZone">
         <option value="main">main</option><option value="balcony">balcony</option><option value="under_balcony">under_balcony</option>
@@ -1161,14 +1331,15 @@ function renderRoomAddPanel(){
       <div class="cardfoot">
         <button class="small secondary" id="btnAddCancel">Cancel</button>
         <button class="small" id="btnAddCreate">Create</button>
-      </div>`;
+      </div></div>`;
     $('btnAddCancel').onclick = () => setRoomAddMode(null);
     $('btnAddCreate').onclick = () => createRoomPosition(roomAddMode.x, roomAddMode.y);
     return;
   }
 
   const disc = roomAddMode.discovery; // Stage 5: set when this add was launched from a discovery row
-  panel.innerHTML = `
+  panel.innerHTML = `<div class="card">
+    <h3>New speaker</h3>
     ${disc ? `<p class="hint">Discovered on the console as ${esc(disc.type)} ${disc.num}${disc.name ? ` ("${esc(disc.name)}")` : ''} — placed at the room's center for now. Drag it to its real position once you confirm what it is; its output starts disabled.</p>` : ''}
     <div class="frow"><label>Label</label><input type="text" id="addSpLabel" placeholder="e.g. Balcony Rail L" value="${esc(disc?.name || '')}"></div>
     <div class="frow"><label>Type</label><select id="addSpRole">
@@ -1179,7 +1350,7 @@ function renderRoomAddPanel(){
     <div class="cardfoot">
       <button class="small secondary" id="btnAddCancel">Cancel</button>
       <button class="small" id="btnAddCreate">Create</button>
-    </div>`;
+    </div></div>`;
   $('btnAddCancel').onclick = () => setRoomAddMode(null);
   $('btnAddCreate').onclick = () => createRoomSpeaker(roomAddMode.x, roomAddMode.y, disc
     ? { wingOverride: { type: disc.type, num: disc.num }, needsPositioning: true, outputEnabled: false }
@@ -1957,13 +2128,13 @@ function renderSettings(){
     <div class="card">
       <h2>Room</h2>
       <canvas id="roomMapEdit" width="560" height="380"></canvas>
-      <div class="frow">
-        <label>Add to map</label>
-        <button class="small secondary" id="btnRoomAddToggle" style="flex:0 0 auto">+ Add</button>
+      <div class="maptoolbar">
+        <span class="maphint"><span class="swatch" style="background:#ff6b5e"></span>main/sub&nbsp;&nbsp;<span class="swatch" style="background:#6ab7ff"></span>fill&nbsp;&nbsp;<span class="swatch" style="background:#3a4048"></span>position</span>
+        <button class="small secondary" id="btnRoomAddToggle"><span class="plus">+</span> Add</button>
       </div>
       <div id="roomAddPanel"></div>
       <div id="roomGearPanel"></div>
-      <p class="hint">Drag a speaker (triangle) or measurement position (circle) to reposition it — saves on release. Tap the small checkbox next to an icon to enable/disable it (dimmed = disabled). Tap the gear icon next to an icon to edit its full settings (routing, band, role, delete, etc).</p>
+      <p class="hint">Drag a speaker or measurement position to reposition it — saves on release. Tap the small toggle next to an icon to enable/disable it (dimmed = disabled). Tap the gear icon to edit its full settings (routing, band, role, delete, etc).</p>
       ${frow('Verify position', `<select id="set_verify_pos">${R.positions.map((p) =>
         `<option value="${esc(p.id)}" ${p.id === R.verifyPosition ? 'selected' : ''}>${esc(p.label)}</option>`).join('')}</select>`)}
       <p class="hint">${esc(R.name)} · ${R.width} m wide · ${R.positions.length} positions · ${(R.speakers || []).length} speakers</p>
