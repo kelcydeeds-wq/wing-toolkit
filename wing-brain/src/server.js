@@ -15,7 +15,6 @@ import { makeOscTransport } from './wing/osc.js';
 import { TuneSession, listSessionHistory } from './tune/session.js';
 import { validateConfig, validateRoomPatch, mergeDeep, writeJsonAtomic } from './config/settings.js';
 import { LoudnessMonitor, listLoudnessHistory, computeSplOffset } from './audio/loudness-monitor.js';
-import { identifyOutputs } from '../scripts/identify-outputs.mjs';
 import { readConsoleNames } from './wing/console-names.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -161,21 +160,6 @@ app.get('/api/console-names', async (_req, res) => {
 app.post('/api/console-names/refresh', async (_req, res) => {
   try {
     res.json(await refreshConsoleNames());
-  } catch (err) {
-    res.status(500).json({ ok: false, error: String(err.message || err) });
-  }
-});
-
-// Live main/mtx name+mute query (scripts/identify-outputs.mjs) so the Buses
-// Settings card can suggest wing.num values instead of hand-typing them from
-// reading the console. Read-only, safe to call any time.
-app.post('/api/discover-outputs', async (_req, res) => {
-  try {
-    const { rows } = await identifyOutputs({
-      mock: config.mode === 'mock', host: config.wing.host, port: config.wing.port,
-      timeoutMs: 800, matrixCount: 8
-    });
-    res.json({ ok: true, rows });
   } catch (err) {
     res.status(500).json({ ok: false, error: String(err.message || err) });
   }

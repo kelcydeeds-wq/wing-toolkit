@@ -1169,10 +1169,9 @@ function renderVerify(){
  * math (and its inverse, for drag release) never drifts out of sync.
  * Mirrors roomBounds()'s bbox math in src/config/settings.js.
  */
-/** Room walls' bounding box -- factored out of roomProjection() so the
- *  discovery-flow default-placement math (roomDiscoveryDefaultPos(), Stage 5)
- *  reuses the exact same bbox instead of a second hand-copied version that
- *  could drift out of sync. Mirrors roomBounds() in src/config/settings.js. */
+/** Room walls' bounding box -- factored out of roomProjection() so any caller
+ *  needing the same bbox uses one definition instead of a hand-copied version
+ *  that could drift. Mirrors roomBounds() in src/config/settings.js. */
 function roomWallBbox(rm){
   const pts = rm.walls || [[0,0],[rm.width,0],[rm.width,rm.depth],[0,rm.depth]];
   const xs = pts.map(p=>p[0]), ys = pts.map(p=>p[1]);
@@ -1188,16 +1187,6 @@ function roomProjection(rm, cv){
     X: (x)=>PAD+(x-minX)*s, Y: (y)=>PAD+(y-minY)*s,
     invX: (px)=>minX+(px-PAD)/s, invY: (py)=>minY+(py-PAD)/s
   };
-}
-
-/** Default placement for a newly discovered speaker (Stage 5): the room's
- *  geometric center, offset +0.5m in x per speaker that already has
- *  needsPositioning:true (undragged) so multiple discovered adds don't stack
- *  exactly on top of each other and become impossible to tap individually. */
-function roomDiscoveryDefaultPos(rm){
-  const { minX, maxX, minY, maxY } = roomWallBbox(rm);
-  const offsetCount = (rm.speakers || []).filter((s) => s.needsPositioning === true).length;
-  return { x: (minX + maxX) / 2 + offsetCount * 0.5, y: (minY + maxY) / 2 };
 }
 
 /* ---- small canvas primitives shared by every room-map glyph below ---- */
@@ -2365,6 +2354,25 @@ function renderSpeakerGearPanel(panel){
         <button class="small secondary" id="gearTestIsolation" style="width:auto">Test driver isolation now</button>
       </div>
       <p class="hint" style="margin:6px 0 0">Runs the same guided wizard a Full Tune would (unplug/confirm each driver, sweep separately, then together) right now, no room walk needed — checks polarity/level/response between ${esc(output.sharedDrivers.drivers.map((d) => d.label).join(' and '))}.</p>` : ''}
+      <details style="margin-top:14px">
+        <summary style="cursor:pointer; color:var(--dim); font-size:13px">Advanced routing internals</summary>
+        <div style="margin-top:10px">
+          <label class="modeopt"><input type="checkbox" id="gear_sp_stereo" ${bus.stereo ? 'checked' : ''}>
+            <span><b>Stereo bus</b><small>Both sides move together (e.g. stereo mains).</small></span></label>
+          <label class="modeopt"><input type="checkbox" id="gear_sp_routing_confirmed" ${bus.wing?.confirmed ? 'checked' : ''}>
+            <span><b>Routing verified</b><small>Check once ${esc(bus.wing?.type === 'mtx' ? 'MTX' : 'MAIN')} ${bus.wing?.num ?? '?'} is confirmed against the console.</small></span></label>
+          <div class="frow"><label>Side</label><select id="gear_sp_side">
+            <option value="mono" ${output.side === 'mono' ? 'selected' : ''}>Mono</option>
+            <option value="L" ${output.side === 'L' ? 'selected' : ''}>Left</option>
+            <option value="R" ${output.side === 'R' ? 'selected' : ''}>Right</option>
+          </select></div>
+          <p class="hint" style="margin:10px 0 4px">Physical output patch — which console output socket physically feeds this box. Unconfirmed until verified at the console (TODO church).</p>
+          <div class="frow"><label>Patch group</label><input type="text" id="gear_sp_pgrp" value="${esc(output.wing?.grp ?? '')}" placeholder="? (e.g. A)"></div>
+          <div class="frow"><label>Patch #</label><input type="number" id="gear_sp_pnum" value="${output.wing?.num ?? ''}" placeholder="?" min="1" max="64"></div>
+          <label class="modeopt"><input type="checkbox" id="gear_sp_patch_confirmed" ${output.wing?.confirmed ? 'checked' : ''}>
+            <span><b>Patch verified</b><small>Check once the physical output socket is confirmed on the console.</small></span></label>
+        </div>
+      </details>
       <p id="gearSpError" class="hint warn" style="display:none"></p>
       <div class="cardfoot">
         <button class="small secondary" id="gearSpDelete">Delete</button>
@@ -2415,7 +2423,8 @@ async function saveSpeakerGearPanel(output, bus) {
   if (!selectedSources.length) return showErr('At least one source speaker is required.');
 
   const nextBus = { ...bus,
-    wing: { ...bus.wing, type: wtype, num: wnum },
+    stereo: $('gear_sp_stereo').checked,
+    wing: { ...bus.wing, type: wtype, num: wnum, confirmed: $('gear_sp_routing_confirmed').checked },
     band: [lo, hi],
     sweepTrimDb: trim,
     role
@@ -2429,7 +2438,12 @@ async function saveSpeakerGearPanel(output, bus) {
     delete nextBus.alignPositions;
   }
 
-  const nextOutput = { ...output, label, enabled };
+  const pgrp = $('gear_sp_pgrp').value.trim();
+  const pnumRaw = $('gear_sp_pnum').value;
+  const nextOutput = { ...output, label, enabled,
+    side: $('gear_sp_side').value,
+    wing: { grp: pgrp || null, num: pnumRaw === '' ? null : Number(pnumRaw), confirmed: $('gear_sp_patch_confirmed').checked }
+  };
   if (selectedSources.length === 1) {
     nextOutput.speakerId = selectedSources[0];
     delete nextOutput.sharedDrivers;
@@ -2881,15 +2895,9 @@ const GUARDRAIL_FIELDS = [
   'maxBoostQ','nullVarianceDb','minFilterHz','noBoostBelowHz','minFilterSpacingOct','tiltOnlyAboveHz'
 ];
 
-let busesDraft = null;           // working copy of C.buses while the settings page is open
-let physicalOutputsDraft = null; // working copy of C.physicalOutputs while the settings page is open
-let lastDiscoveredOutputs = null; // most recent /api/discover-outputs result, for the suggestion UI
-
 function renderSettings(){
   const C = appConfig.config, R = appConfig.room;
   dirtyCards.clear();
-  busesDraft = structuredClone(C.buses);
-  physicalOutputsDraft = structuredClone(C.physicalOutputs);
   const el = $('settingsView');
   document.body.classList.toggle('settings-mode', settingsOpen);
   document.body.classList.toggle('roomtab-mode', settingsOpen && settingsTab === 'room');
@@ -2916,48 +2924,6 @@ function renderSettings(){
   const frow = (label, inner) => `<div class="frow"><label>${label}</label>${inner}</div>`;
   const num = (id, value, attrs = '') => `<input type="number" id="${id}" value="${value}" ${attrs}>`;
   const text = (id, value) => `<input type="text" id="${id}" value="${esc(value)}">`;
-
-  const busRow = (b, i) => `
-    <tr data-i="${i}">
-      <td><input type="text" class="b_label" value="${esc(b.label)}"></td>
-      <td><select class="b_role">
-        <option value="main" ${b.role==='main'?'selected':''}>main</option>
-        <option value="sub" ${b.role==='sub'?'selected':''}>sub</option>
-        <option value="fill" ${b.role==='fill'?'selected':''}>fill</option>
-      </select></td>
-      <td><input type="checkbox" class="b_stereo" ${b.stereo ? 'checked' : ''}></td>
-      <td><select class="b_type">
-        <option value="main" ${b.wing?.type !== 'mtx' ? 'selected' : ''}>Main</option>
-        <option value="mtx" ${b.wing?.type === 'mtx' ? 'selected' : ''}>Matrix</option>
-      </select></td>
-      <td><input type="number" class="b_num" value="${b.wing?.num ?? 1}" min="1" max="64"></td>
-      <td><input type="checkbox" class="b_confirmed" ${b.wing?.confirmed ? 'checked' : ''}></td>
-      <td><input type="number" class="b_lo" value="${b.band?.[0] ?? 20}" min="10" max="24000"></td>
-      <td><input type="number" class="b_hi" value="${b.band?.[1] ?? 20000}" min="10" max="24000"></td>
-      <td><input type="number" class="b_trim" value="${b.sweepTrimDb ?? 0}" min="-60" max="0" step="1"></td>
-    </tr>`;
-
-  const speakerOptions = (selected) => `<option value="">—</option>` + (R.speakers || []).map((s) =>
-    `<option value="${esc(s.id)}" ${s.id === selected ? 'selected' : ''}>${esc(s.id)}</option>`).join('');
-  const busOptions = (selected) => busesDraft.map((b) =>
-    `<option value="${esc(b.id)}" ${b.id === selected ? 'selected' : ''}>${esc(b.label)}</option>`).join('');
-
-  const physicalOutputRow = (o, i) => `
-    <tr data-i="${i}">
-      <td><input type="checkbox" class="p_en" ${o.enabled !== false ? 'checked' : ''}></td>
-      <td><input type="text" class="p_label" value="${esc(o.label)}"></td>
-      <td><select class="p_bus">${busOptions(o.sourceBusId)}</select></td>
-      <td><select class="p_side">
-        <option value="L" ${o.side==='L'?'selected':''}>L</option>
-        <option value="R" ${o.side==='R'?'selected':''}>R</option>
-        <option value="mono" ${o.side==='mono'?'selected':''}>mono</option>
-      </select></td>
-      <td><select class="p_speaker">${speakerOptions(o.speakerId)}</select></td>
-      <td><input type="text" class="p_grp" value="${esc(o.wing?.grp ?? '')}" placeholder="?" style="width:44px"></td>
-      <td><input type="number" class="p_num" value="${o.wing?.num ?? ''}" placeholder="?" style="width:56px"></td>
-      <td><input type="checkbox" class="p_confirmed" ${o.wing?.confirmed ? 'checked' : ''}></td>
-      <td style="color:var(--dim);font-size:12px">${o.sharedDrivers ? `${o.sharedDrivers.count}× (${o.sharedDrivers.drivers.map(d=>esc(d.label)).join('/')})` : '—'}</td>
-    </tr>`;
 
   const curves = Object.values(C.targetCurves);
   const guardrailInput = (key) =>
@@ -2997,30 +2963,9 @@ function renderSettings(){
       <div class="cardfoot"><button class="small" id="save_audio" disabled>Save</button></div>
     </div>
 
-    <div class="card full">
-      <h2>Buses <span style="text-transform:none;letter-spacing:0">— live modules control only this layer</span></h2>
-      <p class="hint">Logical mix buses. Muting/EQ'ing "Mains" sends one command to the stereo Main bus — both sides move together. Numbers marked unconfirmed have never been verified against the real console.</p>
-      <div class="otable"><table id="busesTable">
-        <tr><th>Label</th><th>Role</th><th>Stereo</th><th>Type</th><th>#</th><th>OK?</th><th>Lo Hz</th><th>Hi Hz</th><th>Trim dB</th></tr>
-        ${busesDraft.map(busRow).join('')}
-      </table></div>
-      <div class="cardfoot"><button class="small" id="save_buses" disabled>Save</button></div>
-    </div>
-
-    <div class="card full">
-      <h2>Physical Outputs <span style="text-transform:none;letter-spacing:0">— dumb patches only</span></h2>
-      <p class="hint">Each output socket in use, and which bus feeds it. No EQ/delay is ever written here — correction always targets the bus above. "Shared" outputs (e.g. one Side Fills output driving two boxes) get a guided isolation wizard during Full Tune.</p>
-      <div class="otable"><table id="physicalOutputsTable">
-        <tr><th>On</th><th>Label</th><th>Source bus</th><th>Side</th><th>Speaker</th><th>Grp</th><th>#</th><th>OK?</th><th>Shared</th></tr>
-        ${physicalOutputsDraft.map(physicalOutputRow).join('')}
-      </table></div>
-      <div class="cardfoot">
-        <span id="discoverResult" style="font-size:12px;color:var(--dim);flex:1"></span>
-        <button class="small secondary" id="btnDiscoverOutputs">Run output discovery</button>
-        <button class="small" id="save_physical_outputs" disabled>Save</button>
-      </div>
-      <p class="hint" style="margin-top:14px">Discovery reads bus names/mute state live from the console (read-only) — it doesn't know physical patching, only bus identity. Review its suggestions, don't blindly accept.</p>
-      <div id="discoverySuggestions"></div>
+    <div class="card">
+      <h2>Routing &amp; Outputs</h2>
+      <p class="hint">Speakers, buses, and physical outputs are all configured on the <b>Room Map</b> tab — tap any speaker to set where it's fed from, its band, role, and sources, plus (under <i>Advanced</i>) stereo, side, and the physical output patch. One place to edit routing, with live console names in the picker.</p>
     </div>
 
     <div class="card">
@@ -3097,10 +3042,6 @@ function renderSettings(){
   document.querySelectorAll('input[name=set_mode]').forEach((r) => r.addEventListener('change', () => markDirty('console')));
   wire('audio', ['set_in_dev', 'set_out_dev', 'set_ref_ch', 'set_mic_ch', 'set_sweep_s', 'set_sweep_lvl',
     'set_target_spl', 'set_max_lvl', 'set_snr_margin']);
-  $('busesTable').addEventListener('input', () => markDirty('buses'));
-  $('busesTable').addEventListener('change', () => markDirty('buses'));
-  $('physicalOutputsTable').addEventListener('input', () => markDirty('physical_outputs'));
-  $('physicalOutputsTable').addEventListener('change', () => markDirty('physical_outputs'));
   wire('tuning', ['set_curve', 'set_crossover_hz', 'set_fillprec', 'gr_requireApplyTap', ...GUARDRAIL_FIELDS.map((k) => `gr_${k}`)]);
   $('set_curve').addEventListener('change', () => {
     markDirty('tuning');
@@ -3168,92 +3109,7 @@ function renderSettings(){
   updateSweepLevelHint();
   $('set_target_spl').addEventListener('input', updateSweepLevelHint);
 
-  /* --- card 3a: buses --- */
-  $('save_buses').onclick = () => {
-    const rows = [...document.querySelectorAll('#busesTable tr[data-i]')];
-    const buses = rows.map((tr) => {
-      const orig = busesDraft[Number(tr.dataset.i)];
-      const q = (cls) => tr.querySelector(`.${cls}`);
-      return { ...orig,
-        label: q('b_label').value.trim(),
-        role: q('b_role').value,
-        stereo: q('b_stereo').checked,
-        wing: { ...orig.wing, type: q('b_type').value, num: Number(q('b_num').value), confirmed: q('b_confirmed').checked },
-        band: [Number(q('b_lo').value), Number(q('b_hi').value)],
-        sweepTrimDb: Number(q('b_trim').value)
-      };
-    });
-    return saveConfig('buses', { config: { buses } });
-  };
-
-  /* --- card 3b: physical outputs --- */
-  $('save_physical_outputs').onclick = () => {
-    const rows = [...document.querySelectorAll('#physicalOutputsTable tr[data-i]')];
-    const physicalOutputs = rows.map((tr) => {
-      const orig = physicalOutputsDraft[Number(tr.dataset.i)];
-      const q = (cls) => tr.querySelector(`.${cls}`);
-      const grp = q('p_grp').value.trim();
-      const numVal = q('p_num').value.trim();
-      return { ...orig,
-        enabled: q('p_en').checked,
-        label: q('p_label').value.trim(),
-        sourceBusId: q('p_bus').value,
-        side: q('p_side').value,
-        speakerId: q('p_speaker').value || undefined,
-        wing: { grp: grp || null, num: numVal ? Number(numVal) : null, confirmed: q('p_confirmed').checked }
-      };
-    });
-    return saveConfig('physical_outputs', { config: { physicalOutputs } });
-  };
-  $('btnDiscoverOutputs').onclick = async () => {
-    const out = $('discoverResult');
-    out.style.color = 'var(--dim)'; out.textContent = 'querying console…';
-    try {
-      const res = await fetch('/api/discover-outputs', { method: 'POST' });
-      const body = await res.json();
-      if (!res.ok || !body.ok) { out.style.color = 'var(--red)'; out.textContent = body.error || 'discovery failed'; return; }
-      lastDiscoveredOutputs = body.rows;
-      const answered = body.rows.filter((r) => r.name !== null);
-      out.style.color = answered.length ? 'var(--green)' : 'var(--amber)';
-      out.textContent = `${answered.length}/${body.rows.length} answered`;
-
-      // Stage 5: a row is "unmatched" when no config.buses[] entry already
-      // claims this exact console bus (type+num) -- those rows get a
-      // highlighted row + "Add as speaker" button instead of just the passive
-      // manual-cross-reference hint every row got before this stage.
-      // NOTE: identifyOutputs()/wing-schema.mjs's strip.kind is 'main'|'matrix'
-      // (confirmed by hitting the mock endpoint), but config.buses[].wing.type
-      // is 'main'|'mtx' (see CLAUDE.md's OSC address map + every bus in
-      // config/default.json) -- normalize 'matrix'->'mtx' or every real matrix
-      // bus would show up as a false "unmatched" row.
-      const C = appConfig.config;
-      const rowWingType = (r) => (r.kind === 'matrix' ? 'mtx' : r.kind);
-      const isMatched = (r) => (C.buses || []).some((b) => b.wing?.type === rowWingType(r) && b.wing?.num === r.index);
-      const rowsHtml = body.rows.map((r) => {
-        const matched = isMatched(r);
-        const addBtn = matched ? '' :
-          `<button class="small secondary" data-add-discovered data-kind="${esc(rowWingType(r))}" data-index="${r.index}" data-name="${r.name != null ? esc(r.name) : ''}">Add as speaker</button>`;
-        return `<tr${matched ? '' : ' class="warn"'}><td>${r.kind}</td><td class="num">${r.index}</td>
-          <td>${esc(r.name ?? '(no reply)')}</td><td>${r.mute===null?'?':(r.mute?'muted':'live')}</td><td>${addBtn}</td></tr>`;
-      }).join('');
-      $('discoverySuggestions').innerHTML = `<table style="margin-top:10px">
-        <tr><th>Kind</th><th>#</th><th>Console name</th><th>Mute</th><th></th></tr>
-        ${rowsHtml}
-      </table>
-      <p class="hint">Match these names against your bus labels above, then hand-set each bus's Type/# to match and check "OK?" once confirmed. This does not auto-fill for rows that already have a matching bus. Highlighted rows have no matching bus yet — "Add as speaker" creates a new speaker+bus+output pre-filled with the discovered routing, positioned at the room's center and flagged for you to drag into place and review before enabling.</p>`;
-      document.querySelectorAll('#discoverySuggestions [data-add-discovered]').forEach((btn) => {
-        btn.onclick = () => {
-          const pos = roomDiscoveryDefaultPos(appConfig.room);
-          setRoomAddMode({
-            kind: 'speaker', placed: true, x: pos.x, y: pos.y,
-            discovery: { type: btn.dataset.kind, num: Number(btn.dataset.index), name: btn.dataset.name || null }
-          });
-        };
-      });
-    } catch (err) { out.style.color = 'var(--red)'; out.textContent = String(err); }
-  };
-
-  /* --- card 3c: patch safety --- */
+  /* --- card: patch safety --- */
   (async () => {
     try {
       const res = await fetch('/api/patches/status');

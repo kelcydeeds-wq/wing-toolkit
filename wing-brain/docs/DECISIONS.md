@@ -3,6 +3,38 @@
 Running log of judgment calls made during autonomous work runs, so they can be
 reviewed and reversed if wrong.
 
+## 2026-07-17 — routing revamp, Workstream 5: retire the Buses + Physical Outputs tables
+
+Follow-on to the picker revamp: with the map's speaker gear panel now editing
+routing, the two raw Settings tables (Buses, Physical Outputs) were redundant
+day-to-day. User asked to remove both. The map is now the single routing editor.
+
+- **`config.buses` / `config.physicalOutputs` DATA is untouched** — this is
+  purely deleting two UI editors, not the two-layer model. Everything the
+  engine reads is unchanged; a saved config is byte-identical.
+- **Nothing an editor uniquely owned was dropped — it moved into an "Advanced
+  routing internals" `<details>` in the speaker gear panel:** bus `stereo`, bus
+  routing `confirmed` ("Routing verified"), output `side` (Mono/Left/Right),
+  and the physical output patch (`wing.grp` / `wing.num` / `confirmed`,
+  "Patch verified"). The patch fields especially had to survive — they're the
+  `TODO(church)` home for confirming real output sockets on-site; losing the
+  only UI for them right before the church session would have been a
+  regression. Kept them, just relocated + collapsed so the everyday panel stays
+  clean. `validateConfig` already accepts these exact shapes (side enum, grp
+  null|string, num null|positive-int, confirmed bool), so no validation change.
+- **Output discovery retired from the UI** (`/api/discover-outputs` endpoint +
+  its `identify-outputs` import removed from `server.js`; the discovery
+  suggestion table + "Add as speaker" flow removed from the client). The
+  picker's live "Refresh from console" names + the Test-routing blip now cover
+  identifying which console number is which. `scripts/identify-outputs.mjs`
+  stays as a CLI (with its tests) — only the in-app surface went.
+- **Left a "Routing & Outputs" breadcrumb card** in Settings pointing to the
+  Room Map tab, so anyone looking for the old tables knows where routing moved.
+- **Dropped capability, by choice:** repointing an output to a *different*
+  existing bus (the old `p_bus` dropdown) is no longer a one-tap UI action —
+  it's an edge case, still doable via the Advanced raw-JSON editor. Also
+  `roomDiscoveryDefaultPos()` (dead once discovery went) was removed.
+
 ## 2026-07-17 — routing revamp, Workstream 4: routing verification
 
 Two guards that the picker revamp didn't change what actually reaches the
