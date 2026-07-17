@@ -94,6 +94,18 @@
   .row{display:flex; gap:10px}
   .row>button{flex:1}
 
+  /* Descriptive action buttons (Home's Run card, the tune-mode picker) --
+     a title + a real one-line explanation of what/when/how-long, left
+     aligned, instead of a terse label nobody outside the project would
+     recognize. Reuses the existing color variants (default/secondary/amber)
+     for primary-vs-supporting weight, just with room for real copy. */
+  button.tunemode{display:flex; flex-direction:column; align-items:flex-start; gap:3px;
+    text-align:left; padding:15px 18px; transition:transform .1s}
+  button.tunemode:active{transform:scale(.98)}
+  button.tunemode b{font-size:15px; letter-spacing:.02em}
+  button.tunemode small{font-weight:500; letter-spacing:0; line-height:1.4; opacity:.72; white-space:normal}
+  button.tunemode.secondary small{opacity:.65}
+
   #roomMap,#roomMap2{width:100%; border-radius:10px; background:var(--panel2); display:block;
     box-shadow:inset 0 1px 0 rgba(255,255,255,.03), inset 0 0 0 1px rgba(0,0,0,.4), inset 0 18px 34px -26px rgba(0,0,0,.8);}
   /* #roomMapEdit (the Room Map tab) sizes itself via JS to exactly fill its
@@ -285,12 +297,18 @@
     </div>
     <div class="card">
       <h2>Run</h2>
-      <div class="row">
-        <button class="secondary" id="btnVerify">Verify System<br><small>~2 min · 1 position</small></button>
-        <button class="amber" id="btnFull">Full Tune<br><small>guided · all positions</small></button>
-      </div>
-      <button class="secondary" id="btnPreflight" style="margin-top:8px">Pre-flight Check<br><small>confirm every output returns signal before starting</small></button>
-      <button class="secondary" id="btnSummation" style="margin-top:8px">Verify Summation<br><small>sub+main crossover: subs, mains, combined sweeps</small></button>
+      <button class="tunemode amber" id="btnMeasureTune">
+        <b>Measure &amp; Tune</b>
+        <small>Quick spot-check against your last tune, or a full room re-measure with new EQ — you'll pick which next.</small>
+      </button>
+      <button class="tunemode secondary" id="btnPreflight" style="margin-top:10px">
+        <b>Pre-flight Check</b>
+        <small>~30 sec · confirms every output is making sound · no mic walking needed · good first step if anything might be unplugged.</small>
+      </button>
+      <button class="tunemode secondary" id="btnSummation" style="margin-top:10px">
+        <b>Verify Summation</b>
+        <small>~1 min · checks subs + mains are summing coherently through the crossover, not canceling each other out.</small>
+      </button>
     </div>
     <div class="card hidden" id="preflightSummaryCard">
       <h2>Last pre-flight</h2>
@@ -303,6 +321,23 @@
     <div class="card hidden" id="loudnessHistoryCard">
       <h2>Loudness log</h2>
       <ul class="llist" id="loudnessHistoryList"></ul>
+    </div>
+  </section>
+
+  <!-- TUNE MODE PICKER (client-side navigation only, before a session starts) -->
+  <section id="tuneModeView" class="hidden">
+    <div class="card">
+      <h2>Measure &amp; Tune</h2>
+      <p class="hint" style="margin:0 0 12px">How deep a check do you want?</p>
+      <button class="tunemode secondary" id="pickVerify">
+        <b>Quick Verify</b>
+        <small>~2 min · one position (the sound booth) · compares every output against your last saved baseline · reports drift only — no new EQ is generated or written.</small>
+      </button>
+      <button class="tunemode amber" id="pickFull" style="margin-top:10px">
+        <b>Full Tune</b>
+        <small>~15–20 min · walk to every measured position · produces new EQ + delay recommendations you review and apply — this is the real re-tune.</small>
+      </button>
+      <button class="secondary" id="btnTuneModeBack" style="margin-top:14px">Back</button>
     </div>
   </section>
 
@@ -365,6 +400,7 @@ let summationCheck = null; // last {pass, dipFreqHz, dipDepthDb, subTrace, mains
 let appConfig = null;      // { config, room } — the server's live runtime config
 let settingsOpen = false;
 let settingsTab = 'general'; // 'general' | 'room' -- which Settings tab is showing
+let pickingTuneMode = false; // client-side only -- true while tuneModeView (Quick Verify vs Full Tune) is showing
 let wingStatus = { state: 'untested', detail: '' }; // untested | connected | unreachable
 let loudness = null;       // last { levelDb, status, targetDb, ... } from the loudness monitor
 let loudnessHistory = [];
@@ -470,7 +506,7 @@ function fmtAlertReadCounts(counts){
 function setStatus(t, cls){ const s=$('status'); if(!s) return; s.textContent=t; s.className=cls||''; }
 
 function show(id){
-  for (const v of ['home','sessionView','wizardView','reviewView','verifyView','preflightView','settingsView']) $(v).classList.add('hidden');
+  for (const v of ['home','tuneModeView','sessionView','wizardView','reviewView','verifyView','preflightView','settingsView']) $(v).classList.add('hidden');
   $(id).classList.remove('hidden');
 }
 
@@ -556,7 +592,12 @@ function render(){
     return;
   }
 
-  if (!session || session.state === 'idle') { show('home'); renderPreflightSummary(); $('posHalo')?.classList.add('hidden'); return; }
+  if (!session || session.state === 'idle') {
+    $('posHalo')?.classList.add('hidden');
+    if (pickingTuneMode) { show('tuneModeView'); return; }
+    show('home'); renderPreflightSummary();
+    return;
+  }
 
   if (session.state === 'waiting_position' || session.state === 'measuring') {
     show('sessionView');
@@ -2085,8 +2126,10 @@ $('exitBtn').onclick = () => {
   if (midSession && !confirm('Exit to home? This discards the current session.')) return;
   send({action:'reset'});
 };
-$('btnVerify').onclick = () => send({action:'start', mode:'verify'});
-$('btnFull').onclick   = () => send({action:'start', mode:'full'});
+$('btnMeasureTune').onclick = () => { pickingTuneMode = true; render(); };
+$('btnTuneModeBack').onclick = () => { pickingTuneMode = false; render(); };
+$('pickVerify').onclick = () => { pickingTuneMode = false; send({action:'start', mode:'verify'}); };
+$('pickFull').onclick = () => { pickingTuneMode = false; send({action:'start', mode:'full'}); };
 $('btnPreflight').onclick = () => send({action:'preflight'});
 $('btnSummation').onclick = () => send({action:'summation_check'});
 
