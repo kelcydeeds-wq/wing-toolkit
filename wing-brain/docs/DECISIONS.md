@@ -3,6 +3,36 @@
 Running log of judgment calls made during autonomous work runs, so they can be
 reviewed and reversed if wrong.
 
+## 2026-07-17 — routing revamp, Workstream 4: routing verification
+
+Two guards that the picker revamp didn't change what actually reaches the
+console, and that the console actually reaches the loudspeaker.
+
+- **Address regression test (`test/routing-addresses.test.js`).** The picker
+  changed only the input widget, so a bus stored `{type:'mtx', num:6}` must
+  still produce byte-identical OSC. To test the REAL `applyTuning`/`soloOutputs`
+  (not a re-implementation), added a `transport` injection option to
+  `LiveWing`'s constructor — production still builds the UDP transport from
+  config; a test passes a recording mock transport instead (no socket). The
+  tests pin `/mtx/6/eq/1f`, `/mtx/6/dly/dly` (+mode "MS"), the mute-based solo
+  addresses, and that mtx routing never leaks to `/main` (and vice-versa).
+- **Per-speaker "Test routing" (`testRoutingForOutput`).** A single-output
+  preflight: solo the bus, play the band-limited preflight blip, capture the
+  reference mic, report signal-detected / clipped / none. Ground truth that the
+  configured routing feeds a real box — reuses the exact solo/inject/restore/
+  finally shape (and pass thresholds) as `preflightCheck`, so there's one
+  definition of "did signal come back," not two. New `test_routing` websocket
+  action; the button lives in the Room Map gear panel and is **live-mode only**
+  (a mock "pass" would be meaningless/misleading — same honesty rule as the
+  name reads). It keeps the panel open and reports via toast, so the operator
+  can fix routing and re-test without reopening.
+- **New transient `routing_test` session state**, added to `sessionBusy()` so a
+  concurrent settings save can't rebuild the runtime mid-blip. It needs no
+  client view: the button only exists inside Settings, and `render()` returns
+  early on `settingsOpen`, so the ~2 s state change never flips the screen —
+  the result surfaces as a toast (info/warning already route to a toast when
+  the session view is hidden).
+
 ## 2026-07-17 — routing revamp, Workstream 3: interaction polish
 
 Room-map interaction pass on top of WS1/WS2.

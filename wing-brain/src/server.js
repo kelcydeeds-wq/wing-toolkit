@@ -83,7 +83,7 @@ async function refreshConsoleNames() {
 
 /** True when saving settings would destroy in-flight work. */
 function sessionBusy() {
-  return ['waiting_position', 'measuring', 'preflight', 'review'].includes(session.state);
+  return ['waiting_position', 'measuring', 'preflight', 'review', 'routing_test'].includes(session.state);
 }
 
 /* ------------------------------- HTTP API -------------------------------- */
@@ -482,6 +482,9 @@ wss.on('connection', (ws) => {
         // Standalone driver-isolation test -- same wizard, entered directly
         // instead of nested inside a Full Tune's per-position loop.
         case 'test_shared_driver': await session.testSharedDriverIsolation(msg.physicalOutputId); break;
+        // Per-speaker routing ground-truth: blip through one output's bus,
+        // confirm the mic hears it (routing revamp, Workstream 4).
+        case 'test_routing': await session.testRoutingForOutput(msg.physicalOutputId); break;
         // "Restore All Patches" escape hatch — works regardless of session state.
         case 'restore_patches': session.restoreAllPatches(); break;
       }

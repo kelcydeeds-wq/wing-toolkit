@@ -347,3 +347,47 @@ test('testSharedDriverIsolation refuses to run while a session is already in pro
   session.start('verify'); // state -> waiting_position
   await assert.rejects(() => session.testSharedDriverIsolation('side_fills_out'), /cannot test driver isolation while a session is running/);
 });
+
+// --- Per-speaker "Test routing" (Workstream 4): blip one output, confirm the
+//     mic hears it, return to idle. A single-output preflight in shape.
+
+function subOnlyConfig() {
+  const bus = config.buses.find((b) => b.id === 'sub');
+  const physicalOutput = config.physicalOutputs.find((o) => o.id === 'sub_out');
+  return { ...config, buses: [bus], physicalOutputs: [physicalOutput] };
+}
+
+test('testRoutingForOutput blips one output, emits a "Routing OK" pass, and returns to idle', async () => {
+  const audio = { playAndCapture: async () => cleanCapture(20) };
+  const { log, emit } = collectEvents();
+  const session = newSession({ config: subOnlyConfig(), room: miniRoom, audio, wing: fakeWing(), emit });
+
+  const result = await session.testRoutingForOutput('sub_out');
+  assert.equal(session.state, 'idle');
+  assert.equal(result.pass, true);
+  assert.ok(log.some((e) => e.event === 'info' && /Routing OK/.test(e.payload.message)), 'emits a pass info');
+});
+
+test('testRoutingForOutput warns "NO usable signal" when the mic hears nothing', async () => {
+  const silent = new Float64Array(Math.floor(captureSeconds * sr));
+  const audio = { playAndCapture: async () => ({ ref: silent, mic: silent }) };
+  const { log, emit } = collectEvents();
+  const session = newSession({ config: subOnlyConfig(), room: miniRoom, audio, wing: fakeWing(), emit });
+
+  const result = await session.testRoutingForOutput('sub_out');
+  assert.equal(result.pass, false);
+  assert.equal(session.state, 'idle');
+  assert.ok(log.some((e) => e.event === 'warning' && /NO usable signal/.test(e.payload.message)));
+});
+
+test('testRoutingForOutput throws for an unknown physical output id', async () => {
+  const session = newSession({ config: subOnlyConfig(), room: miniRoom, audio: {}, wing: fakeWing(), emit: () => {} });
+  await assert.rejects(() => session.testRoutingForOutput('not_a_real_output'), /not found/);
+});
+
+test('testRoutingForOutput refuses to run while a session is already in progress', async () => {
+  const audio = { playAndCapture: async () => cleanCapture(20) };
+  const session = newSession({ config: subOnlyConfig(), room: miniRoom, audio, wing: fakeWing(), emit: () => {} });
+  session.start('verify'); // state -> waiting_position
+  await assert.rejects(() => session.testRoutingForOutput('sub_out'), /cannot test routing while a session is running/);
+});

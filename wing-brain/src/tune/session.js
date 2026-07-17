@@ -590,6 +590,72 @@ export class TuneSession {
   }
 
   /**
+   * Per-speaker "Test routing": ground-truth that the picker-configured routing
+   * actually reaches a real loudspeaker. Solos this ONE output's bus, plays a
+   * band-limited blip (the same preflight blip), captures the mic, and reports
+   * signal-detected / not. Effectively a single-output preflight, invoked from
+   * the Room Map gear panel in live mode. Same solo/inject/restore/finally
+   * shape as preflightCheck(); does not touch this.results.
+   */
+  async testRoutingForOutput(physicalOutputId) {
+    if (!['idle', 'done', 'review'].includes(this.state)) {
+      throw new Error('cannot test routing while a session is running');
+    }
+    const physicalOutput = this.cfg.physicalOutputs.find((o) => o.id === physicalOutputId);
+    if (!physicalOutput) throw new Error(`physical output "${physicalOutputId}" not found`);
+    const bus = this.busFor(physicalOutput);
+    if (!bus) throw new Error(`"${physicalOutput.label}" references a missing bus "${physicalOutput.sourceBusId}"`);
+    const pf = this.cfg.audio.preflight || {};
+    const minPeak = pf.minPeakDbfs ?? -50;
+    const minSnr = pf.minSnrDb ?? 12;
+    const pos = this.room.positions.find((p) => p.id === this.room.verifyPosition)
+      || this.room.positions[0] || { x: 0, y: 0, z: 1.2 };
+    const speakerId = physicalOutput.speakerId;
+    const designation = `${bus.wing?.type === 'mtx' ? 'MTX' : 'MAIN'} ${bus.wing?.num}`;
+
+    this.state = 'routing_test';
+    this.emit('session', this.snapshot());
+    this.emit('info', { message: `Testing routing: ${physicalOutput.label} via ${designation}…` });
+    try {
+      if (this.audio.setScenario) this.audio.setScenario(speakerId || bus.id, pos, [speakerId || bus.id]);
+      await this.wing.soloOutput(bus.id, this.activeBuses());
+
+      let injected = false;
+      try { await this.wing.injectTestSignal(physicalOutput); injected = true; }
+      catch { /* fall back to bus solo/mute only */ }
+      await pause(300);
+
+      const blip = scaleBuffer(this.blipForOutput(bus), bus.sweepTrimDb);
+      const { mic } = await this.audio.playAndCapture(blip, this.blipCaptureSeconds);
+
+      if (injected) {
+        try { await this.wing.restorePatch(physicalOutput); }
+        catch (err) {
+          this.emit('error', { message: `${physicalOutput.label}: FAILED to restore its original patch — use "Restore All Patches" in Settings immediately. (${err.message})` });
+        }
+      }
+
+      const peak = Math.round(peakDbfs(mic) * 10) / 10;
+      const snrDb = estimateSnrDb(mic, this.cfg.audio.sampleRate);
+      const clipped = isClipped(mic);
+      const pass = peak >= minPeak && !clipped && snrDb >= minSnr;
+
+      if (pass) {
+        this.emit('info', { message: `Routing OK — ${physicalOutput.label} (${designation}) returned signal (${peak} dBFS, SNR ${snrDb} dB).` });
+      } else if (clipped) {
+        this.emit('warning', { message: `Routing test: ${physicalOutput.label} (${designation}) CLIPPED — mic near/above 0 dBFS. Lower the amp trim or preamp gain.` });
+      } else {
+        this.emit('warning', { message: `Routing test: ${physicalOutput.label} (${designation}) returned NO usable signal — check that ${designation} actually feeds this loudspeaker (amp on, patch correct).` });
+      }
+      return { outputId: physicalOutput.id, pass, peakDbfs: peak, snrDb, clipped };
+    } finally {
+      await this.wing.unmuteAll(this.activeBuses());
+      this.state = 'idle';
+      this.emit('session', this.snapshot());
+    }
+  }
+
+  /**
    * Pre-flight: play a short blip on each enabled physical output and
    * confirm signal returns before committing to a full guided session.
    * Shared-driver outputs are NOT walked through the wizard here — this is

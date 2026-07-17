@@ -37,9 +37,11 @@ export function makeWing(config, opts = {}) {
 /* ------------------------------- LIVE ---------------------------------- */
 
 class LiveWing {
-  constructor(config, { dataDir } = {}) {
+  constructor(config, { dataDir, transport } = {}) {
     this.cfg = config;
-    this.osc = makeOscTransport(config);
+    // `transport` injection is for tests (a mock OSC transport that records
+    // sends) -- production always builds the real UDP transport from config.
+    this.osc = transport || makeOscTransport(config);
     this.ready = this.osc.ready;
     this.patches = new PatchManager({ config, transport: this.osc, dataDir });
   }

@@ -2357,6 +2357,10 @@ function renderSpeakerGearPanel(panel){
       </div>
       <p class="hint" style="margin-bottom:4px">Sources — every driver speaker for this output (this speaker is always included; add more for a shared/side-fill pair).</p>
       <div>${sourceOptions}</div>
+      ${C.mode === 'live' ? `<div class="cardfoot" style="justify-content:flex-start; margin-top:10px">
+        <button class="small secondary" id="gearTestRouting" style="width:auto">Test routing</button>
+      </div>
+      <p class="hint" style="margin:6px 0 0">Plays a 1 s band-limited blip through this output's bus only and listens on the reference mic — ground truth that ${esc(bus.wing?.type === 'mtx' ? 'MTX' : 'MAIN')} ${bus.wing?.num ?? '?'} actually reaches a real loudspeaker.</p>` : ''}
       ${output.sharedDrivers?.count > 1 ? `<div class="cardfoot" style="justify-content:flex-start; margin-top:10px">
         <button class="small secondary" id="gearTestIsolation" style="width:auto">Test driver isolation now</button>
       </div>
@@ -2376,6 +2380,11 @@ function renderSpeakerGearPanel(panel){
   $('gearClose').onclick = closeRoomGearPanel;
   $('gearSpSave').onclick = () => saveSpeakerGearPanel(output, bus);
   $('gearSpDelete').onclick = () => deleteSpeakerGearPanel(output, bus);
+  if (C.mode === 'live') {
+    // Keep the panel open -- the result comes back as a toast; the operator can
+    // re-test or fix routing without reopening.
+    $('gearTestRouting').onclick = () => send({ action: 'test_routing', physicalOutputId: output.id });
+  }
   if (output.sharedDrivers?.count > 1) {
     $('gearTestIsolation').onclick = () => {
       closeRoomGearPanel();
