@@ -2895,6 +2895,72 @@ const GUARDRAIL_FIELDS = [
   'maxBoostQ','nullVarianceDb','minFilterHz','noBoostBelowHz','minFilterSpacingOct','tiltOnlyAboveHz'
 ];
 
+/* ---- audio device pickers: dropdowns synced to the machine's real devices ---- */
+
+/** Fetch the machine's audio devices and turn the two device <select>s into
+ *  real dropdowns. Falls back to a free-text input where devices can't be
+ *  enumerated (no audio backend on this box), and warns when the list is MME
+ *  (not the ASIO names live capture actually needs). */
+async function populateAudioDevices(currentIn, currentOut){
+  let data;
+  try { data = await (await fetch('/api/audio-devices')).json(); }
+  catch { data = { available: false }; }
+  const inSel = $('set_in_dev'), outSel = $('set_out_dev'), hint = $('audioDevHint');
+  if (!inSel || !outSel) return; // settings closed / re-rendered while fetching
+
+  if (!data.available || (!data.inputs?.length && !data.outputs?.length)) {
+    swapDeviceToText('set_in_dev', currentIn);
+    swapDeviceToText('set_out_dev', currentOut);
+    if (hint) { hint.textContent = 'Could not read audio devices on this machine — type the device name. The dropdown populates where the audio backend is installed (the brain box).'; hint.className = 'hint warn'; }
+    return;
+  }
+  fillDeviceSelect(inSel, data.inputs, currentIn);
+  fillDeviceSelect(outSel, data.outputs, currentOut);
+  if (hint) {
+    if (data.source === 'winmm') {
+      hint.textContent = 'These are Windows (MME) device names — live measurement needs the ASIO device name for your interface. Confirm the exact ASIO name on the brain box before a live tune.';
+      hint.className = 'hint warn';
+    } else {
+      hint.textContent = 'Live measurement uses the ASIO entry for your interface — pick that one. Other host APIs are listed for reference.';
+      hint.className = 'hint';
+    }
+  }
+}
+
+/** Rebuild a device <select> grouped by host API (ASIO groups first). Keeps the
+ *  current saved value selectable even if the machine doesn't list it. */
+function fillDeviceSelect(sel, devices, current){
+  const byApi = new Map();
+  for (const d of devices) {
+    const api = d.hostAPI || 'Other';
+    if (!byApi.has(api)) byApi.set(api, []);
+    byApi.get(api).push(d);
+  }
+  const apis = [...byApi.keys()].sort((a, b) =>
+    (/asio/i.test(b) ? 1 : 0) - (/asio/i.test(a) ? 1 : 0) || a.localeCompare(b));
+  const known = new Set(devices.map((d) => d.name));
+  let html = '';
+  if (current && !known.has(current)) {
+    html += `<option value="${esc(current)}" selected>${esc(current)} — current (not detected here)</option>`;
+  }
+  for (const api of apis) {
+    const opts = byApi.get(api).map((d) =>
+      `<option value="${esc(d.name)}" ${d.name === current ? 'selected' : ''}>${esc(d.name)}</option>`).join('');
+    html += `<optgroup label="${esc(api)}">${opts}</optgroup>`;
+  }
+  sel.innerHTML = html;
+}
+
+/** Replace a device <select> with a free-text input (same id) for machines that
+ *  can't enumerate devices, so the field still works. */
+function swapDeviceToText(id, value){
+  const el = $(id); if (!el) return;
+  const input = document.createElement('input');
+  input.type = 'text'; input.id = id; input.value = value ?? '';
+  input.addEventListener('input', () => markDirty('audio'));
+  el.replaceWith(input);
+}
+
 function renderSettings(){
   const C = appConfig.config, R = appConfig.room;
   dirtyCards.clear();
@@ -2947,9 +3013,9 @@ function renderSettings(){
 
     <div class="card">
       <h2>Audio</h2>
-      ${frow('Input device', text('set_in_dev', C.audio.inputDevice))}
-      ${frow('Output device', text('set_out_dev', C.audio.outputDevice))}
-      <p class="hint">Device names must match the audio device list on the brain box — run the device-list helper (e.g. <code>sox --help</code> / ASIO panel) to see exact strings.</p>
+      ${frow('Input device', `<select id="set_in_dev"><option value="${esc(C.audio.inputDevice)}" selected>${esc(C.audio.inputDevice || '(none set)')}</option></select>`)}
+      ${frow('Output device', `<select id="set_out_dev"><option value="${esc(C.audio.outputDevice)}" selected>${esc(C.audio.outputDevice || '(none set)')}</option></select>`)}
+      <p class="hint" id="audioDevHint">Reading audio devices…</p>
       ${frow('Reference capture channel', num('set_ref_ch', C.audio.referenceInputChannel, 'min="1" max="64"'))}
       ${frow('Mic capture channel', num('set_mic_ch', C.audio.micInputChannel, 'min="1" max="64"'))}
       ${frow('Sweep length (s)', num('set_sweep_s', C.audio.sweep.seconds, 'min="1" max="30"'))}
@@ -2961,11 +3027,6 @@ function renderSettings(){
       ${frow('Min SNR margin for auto-raise (dB)', num('set_snr_margin', C.audio.sweep.minSnrMarginDb ?? 20, 'min="0" max="40"'))}
       <p class="hint">Auto-SNR check: before every sweep, ~1s of ambient noise is measured on the mic channel. If the planned level wouldn't clear it by the margin above, the sweep is automatically raised (never above the max) — no operator action needed.</p>
       <div class="cardfoot"><button class="small" id="save_audio" disabled>Save</button></div>
-    </div>
-
-    <div class="card">
-      <h2>Routing &amp; Outputs</h2>
-      <p class="hint">Speakers, buses, and physical outputs are all configured on the <b>Room Map</b> tab — tap any speaker to set where it's fed from, its band, role, and sources, plus (under <i>Advanced</i>) stereo, side, and the physical output patch. One place to edit routing, with live console names in the picker.</p>
     </div>
 
     <div class="card">
@@ -3017,19 +3078,7 @@ function renderSettings(){
       </div>
       <p class="hint">Saved offset: ${C.audio.splDbOffset != null ? `${C.audio.splDbOffset.toFixed(1)} dB` : 'not calibrated yet — meter reads raw dBFS'}</p>
     </div>
-
-    <div class="card full">
-      <h2>Advanced</h2>
-      <p class="hint">Raw config editor — the escape hatch. Validated server-side before anything is written; saving REPLACES the whole config (deletions stick).</p>
-      <textarea id="set_rawjson" rows="16" spellcheck="false"></textarea>
-      <div class="cardfoot">
-        <button class="small secondary" id="btnRawReload">Reload</button>
-        <button class="small" id="save_raw" disabled>Validate &amp; Save</button>
-      </div>
-    </div>
   </div>`;
-
-  $('set_rawjson').value = JSON.stringify(C, null, 2);
 
   // Dirty tracking: any input inside a card enables that card's save button.
   const wire = (card, ids) => {
@@ -3042,13 +3091,13 @@ function renderSettings(){
   document.querySelectorAll('input[name=set_mode]').forEach((r) => r.addEventListener('change', () => markDirty('console')));
   wire('audio', ['set_in_dev', 'set_out_dev', 'set_ref_ch', 'set_mic_ch', 'set_sweep_s', 'set_sweep_lvl',
     'set_target_spl', 'set_max_lvl', 'set_snr_margin']);
+  populateAudioDevices(C.audio.inputDevice, C.audio.outputDevice);
   wire('tuning', ['set_curve', 'set_crossover_hz', 'set_fillprec', 'gr_requireApplyTap', ...GUARDRAIL_FIELDS.map((k) => `gr_${k}`)]);
   $('set_curve').addEventListener('change', () => {
     markDirty('tuning');
     $('curveHint').textContent = curves.find((c) => c.name === $('set_curve').value)?.comment || '';
   });
   wireTabBar();
-  $('set_rawjson').addEventListener('input', () => markDirty('raw'));
   wire('loudness', ['lm_enabled', 'lm_pos', 'lm_target', 'lm_soft', 'lm_hard', 'lm_sustained', 'lm_window', 'lm_quiet_on', 'lm_quiet']);
   $('lm_pos').addEventListener('change', () => markDirty('loudness'));
   $('lm_window').addEventListener('change', () => markDirty('loudness'));
@@ -3172,18 +3221,6 @@ function renderSettings(){
       out.style.color = 'var(--green)'; out.textContent = `offset saved: ${body.offsetDb} dB (measured ${body.measuredDbfs} dBFS)`;
       showToast('Calibrated', 'ok');
     } catch (err) { out.style.color = 'var(--red)'; out.textContent = String(err); }
-  };
-
-  /* --- card 7: advanced --- */
-  $('btnRawReload').onclick = () => {
-    $('set_rawjson').value = JSON.stringify(appConfig.config, null, 2);
-    markDirty('raw', false);
-  };
-  $('save_raw').onclick = () => {
-    let parsed;
-    try { parsed = JSON.parse($('set_rawjson').value); }
-    catch (err) { showToast(`JSON parse error: ${err.message}`, 'warn'); return; }
-    return saveConfig('raw', { config: parsed, replace: true });
   };
 }
 

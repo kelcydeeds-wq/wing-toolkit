@@ -3,6 +3,29 @@
 Running log of judgment calls made during autonomous work runs, so they can be
 reviewed and reversed if wrong.
 
+## 2026-07-17 — Settings declutter + audio-device dropdowns
+
+- **Removed the raw-JSON config editor ("Advanced" card).** The user will never
+  use it. Note this retires the last-resort escape hatch that earlier entries
+  cited as the fallback for anything not exposed in the UI (e.g. repointing an
+  output to a different bus). If a truly un-exposed edit is ever needed, it's
+  now hand-editing `config/default.json` on the box, not an in-app textarea.
+- **Removed the "Routing & Outputs" breadcrumb card** (added when the routing
+  tables were retired) — redundant once the user knew routing lives on the map.
+- **Input/Output device fields are now dropdowns synced to the real machine.**
+  New `GET /api/audio-devices`: tries `naudiodon.getDevices()` first — the only
+  source that sees ASIO devices, which is what live capture actually uses — and
+  falls back to the existing WinMM enumerator (`scripts/list-audio-devices.mjs`,
+  always works on Windows, no native build) so there's still a populated
+  dropdown on a machine without naudiodon built. The response carries `source`;
+  the client shows an **honest warning when the list is MME** ("these are
+  Windows MME names — live needs the ASIO name, confirm on the brain box"),
+  because an MME name is NOT a valid ASIO device name (the standing
+  TODO(church) trap). Same no-misleading-data discipline as the console names.
+  The current saved value is always kept selectable (shown "current — not
+  detected here" if the machine doesn't list it), and where neither source is
+  available the field degrades to a free-text input so it never breaks.
+
 ## 2026-07-17 — routing revamp, Workstream 5: retire the Buses + Physical Outputs tables
 
 Follow-on to the picker revamp: with the map's speaker gear panel now editing

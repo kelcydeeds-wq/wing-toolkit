@@ -16,6 +16,7 @@ import { TuneSession, listSessionHistory } from './tune/session.js';
 import { validateConfig, validateRoomPatch, mergeDeep, writeJsonAtomic } from './config/settings.js';
 import { LoudnessMonitor, listLoudnessHistory, computeSplOffset } from './audio/loudness-monitor.js';
 import { readConsoleNames } from './wing/console-names.js';
+import { listAudioDevices } from '../scripts/list-audio-devices.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
@@ -163,6 +164,37 @@ app.post('/api/console-names/refresh', async (_req, res) => {
   } catch (err) {
     res.status(500).json({ ok: false, error: String(err.message || err) });
   }
+});
+
+// Audio device lists for the Settings input/output pickers. Prefers naudiodon
+// (PortAudio) -- the ONLY source that sees ASIO devices, which is what live
+// capture actually uses -- and falls back to the WinMM enumerator (always works
+// on Windows, no native build) so there's still a dropdown on a machine without
+// naudiodon built. `source` tells the client which it got, so it can warn that
+// MME names are NOT valid ASIO device names (see docs/DECISIONS.md).
+app.get('/api/audio-devices', async (_req, res) => {
+  try {
+    const mod = await import('naudiodon');
+    const naudiodon = mod.default ?? mod;
+    const devices = naudiodon.getDevices();
+    const map = (d) => ({ name: d.name, hostAPI: d.hostAPIName || 'Other', maxIn: d.maxInputChannels, maxOut: d.maxOutputChannels });
+    return res.json({
+      available: true, source: 'naudiodon',
+      inputs: devices.filter((d) => d.maxInputChannels > 0).map(map),
+      outputs: devices.filter((d) => d.maxOutputChannels > 0).map(map)
+    });
+  } catch { /* naudiodon not built here -- fall through to WinMM */ }
+  try {
+    const { inputs, outputs } = await listAudioDevices();
+    if (inputs.length || outputs.length) {
+      return res.json({
+        available: true, source: 'winmm',
+        inputs: inputs.map((d) => ({ name: d.name, hostAPI: 'MME' })),
+        outputs: outputs.map((d) => ({ name: d.name, hostAPI: 'MME' }))
+      });
+    }
+  } catch { /* neither source available */ }
+  res.json({ available: false });
 });
 
 /* ------------------------------ Patch safety ------------------------------ */
