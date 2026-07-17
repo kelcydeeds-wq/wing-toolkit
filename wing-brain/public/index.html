@@ -159,6 +159,12 @@
   input[type=number]{text-align:right}
   input[type=checkbox]{width:18px; height:18px; accent-color:var(--amber)}
   textarea{font-size:12px; line-height:1.5; resize:vertical}
+  /* Make every <select> read as a dropdown: kill the inconsistent native
+     widget and draw our own chevron so a populated dropdown never looks like a
+     plain text box. */
+  select{appearance:none; -webkit-appearance:none; cursor:pointer; padding-right:32px;
+    background-image:url("data:image/svg+xml;utf8,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='12'%20height='12'%20viewBox='0%200%2012%2012'%3E%3Cpath%20d='M2,4L6,8L10,4'%20fill='none'%20stroke='%238b96a0'%20stroke-width='1.6'%20stroke-linecap='round'%20stroke-linejoin='round'/%3E%3C/svg%3E");
+    background-repeat:no-repeat; background-position:right 11px center; background-size:12px}
   input:disabled,select:disabled{opacity:.4}
   .frow{display:flex; align-items:center; justify-content:space-between; gap:12px; padding:7px 0}
   .frow>label{color:var(--dim); font-size:13px; flex:1}
