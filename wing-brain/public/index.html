@@ -529,6 +529,15 @@ function render(){
   // sessionBusy force-close, tab switches), not just the gearBtn handler.
   document.body.classList.toggle('settings-mode', settingsOpen);
   document.body.classList.toggle('roomtab-mode', settingsOpen && settingsTab === 'room');
+  // #fab is a fixed bottom-of-viewport bar with its own dark gradient
+  // background (so floating buttons stay readable over scrolling content
+  // behind them) -- clearing fabInner's buttons above does NOT hide that
+  // gradient, so it was permanently painted over the bottom of every
+  // Settings view (most visibly the Room Map tab's footer, which sits
+  // right where the gradient fades to solid). Settings never uses the fab
+  // pattern at all (it has its own cardfoot buttons throughout), so it
+  // should just be hidden outright for as long as Settings is open.
+  $('fab').classList.toggle('hidden', settingsOpen);
   $('gearBtn').textContent = settingsOpen ? '✕' : '⚙';
   $('gearBtn').classList.toggle('hidden', !!sessionBusy);
   if (settingsOpen) {
@@ -2328,6 +2337,8 @@ function renderSettings(){
       ${frow('Target curve', `<select id="set_curve">${curves.map((c) =>
         `<option value="${esc(c.name)}" ${c.name === C.selectedTargetCurve ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}</select>`)}
       <p class="hint" id="curveHint">${esc(curves.find((c) => c.name === C.selectedTargetCurve)?.comment || '')}</p>
+      ${frow('Crossover point (Hz)', num('set_crossover_hz', C.system?.crossoverHz ?? 100, 'min="40" max="300"'))}
+      <p class="hint">Nominal sub/main handoff frequency. The region from 0.6x–1.5x this (currently ${Math.round((C.system?.crossoverHz ?? 100)*0.6)}–${Math.round((C.system?.crossoverHz ?? 100)*1.5)} Hz) is treated as shared — recommendEQ never places an independent cut/boost there for either output, and the advisor reasons about sub+main jointly instead. Also sets new speakers' default sub/main band edges and the diagnostic window "Verify Summation" scans for cancellation.</p>
       ${frow('Fill precedence (ms)', num('set_fillprec', C.guardrails.fillPrecedenceMs, 'min="0" max="20" step="0.5"'))}
       <p class="hint">Guardrails are safety limits enforced in code on every recommendation (local or Claude). Read-only unless unlocked.</p>
       <label class="modeopt"><input type="checkbox" id="set_unlock_gr">
@@ -2392,7 +2403,7 @@ function renderSettings(){
   $('busesTable').addEventListener('change', () => markDirty('buses'));
   $('physicalOutputsTable').addEventListener('input', () => markDirty('physical_outputs'));
   $('physicalOutputsTable').addEventListener('change', () => markDirty('physical_outputs'));
-  wire('tuning', ['set_curve', 'set_fillprec', 'gr_requireApplyTap', ...GUARDRAIL_FIELDS.map((k) => `gr_${k}`)]);
+  wire('tuning', ['set_curve', 'set_crossover_hz', 'set_fillprec', 'gr_requireApplyTap', ...GUARDRAIL_FIELDS.map((k) => `gr_${k}`)]);
   $('set_curve').addEventListener('change', () => {
     markDirty('tuning');
     $('curveHint').textContent = curves.find((c) => c.name === $('set_curve').value)?.comment || '';
@@ -2576,7 +2587,7 @@ function renderSettings(){
       for (const k of GUARDRAIL_FIELDS) guardrails[k] = Number($(`gr_${k}`).value);
       guardrails.requireApplyTap = $('gr_requireApplyTap').checked;
     }
-    const patch = { config: { guardrails } };
+    const patch = { config: { guardrails, system: { crossoverHz: Number($('set_crossover_hz').value) } } };
     if ($('set_curve').value !== C.selectedTargetCurve) patch.config.selectedTargetCurve = $('set_curve').value;
     return saveConfig('tuning', patch);
   };
