@@ -70,6 +70,16 @@ export function validateConfig(config, room) {
   if (!isNum(sys.crossoverHz) || sys.crossoverHz < 40 || sys.crossoverHz > 300) {
     bad('system.crossoverHz: must be a number 40-300 Hz');
   }
+  // reservedBuses: destinations the routing picker shows but flags "(reserved)"
+  // and requires an extra confirm to select (e.g. a matrix kept free for a
+  // recorder feed). Optional; each entry is a {type, num} like a bus's wing.
+  if (sys.reservedBuses !== undefined) {
+    if (!Array.isArray(sys.reservedBuses)) bad('system.reservedBuses: must be an array');
+    else sys.reservedBuses.forEach((r, i) => {
+      if (!['main', 'mtx'].includes(r?.type)) bad(`system.reservedBuses[${i}].type: must be "main" or "mtx"`);
+      if (!isInt(r?.num) || r.num < 1 || r.num > 64) bad(`system.reservedBuses[${i}].num: must be an integer 1-64`);
+    });
+  }
 
   const a = config.audio || {};
   if (!isInt(a.sampleRate) || a.sampleRate < 8000 || a.sampleRate > 192000) {

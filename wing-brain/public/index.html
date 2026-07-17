@@ -545,10 +545,133 @@ function consoleNamesFreshness() {
   return `names read ${rel} · ${consoleNames.answered}/${consoleNames.total} answered`;
 }
 
-/** Re-render any on-screen routing picker when a new name read lands. Defined
- *  by the routing-picker code (Workstream 2); a safe no-op until then. */
+/** Re-render any on-screen routing picker when a new name read lands. */
 function onConsoleNames() {
   if (typeof refreshRoutingPickerUI === 'function') refreshRoutingPickerUI();
+}
+
+/* --------------------- routing picker (Wing-native) ------------------- */
+// ONE dropdown of real console destinations (mains + matrices), each labelled
+// with its live scribble-strip name when the console has one. Replaces the old
+// free-text "Routing type" + "Routing #" pair. Storage is UNCHANGED -- the
+// option value maps straight back to {type, num}. Destinations already claimed
+// by another bus are disabled ("in use: …"); reserved ones are selectable only
+// after an extra confirm. Names come from consoleNames -- never a placeholder.
+
+const ROUTING_KINDS = [
+  { kind: 'main', groupLabel: 'Mains',    designation: 'MAIN', fallbackCount: 4 },
+  { kind: 'mtx',  groupLabel: 'Matrices', designation: 'MTX',  fallbackCount: 8 }
+];
+let currentRoutingPickerCtx = null; // {selectId, excludeBusId, placeholder} while a picker is on screen
+
+/** How many of a kind to list: authoritative count comes from a loaded name
+ *  read (its entries keys), else the fallback until the first read lands. */
+function routingCount(kind, fallback) {
+  const e = consoleNames?.entries?.[kind];
+  return e ? Object.keys(e).length : fallback;
+}
+
+function reservedRoutingSet() {
+  return new Set((appConfig.config.system?.reservedBuses || []).map((r) => `${r.type}:${r.num}`));
+}
+
+/** "type:num" -> label of the OTHER bus already claiming that destination
+ *  (the bus being edited is excluded, so its own routing isn't "in use"). */
+function routingClaims(excludeBusId) {
+  const claims = new Map();
+  for (const b of appConfig.config.buses) {
+    if (b.id === excludeBusId) continue;
+    if (b.wing?.type && b.wing?.num != null) claims.set(`${b.wing.type}:${b.wing.num}`, b.label || b.id);
+  }
+  return claims;
+}
+
+/** Parse a picker value ("mtx:6") back into the stored routing shape. */
+function parseRoutingValue(v) {
+  if (!v) return null;
+  const [type, num] = v.split(':');
+  if (!type || !num) return null;
+  return { type, num: Number(num) };
+}
+
+function routingOptionsHtml({ selectedType, selectedNum, excludeBusId, placeholder }) {
+  const reserved = reservedRoutingSet();
+  const claims = routingClaims(excludeBusId);
+  const selVal = selectedType && selectedNum != null ? `${selectedType}:${selectedNum}` : '';
+  let html = '';
+  if (placeholder) {
+    html += `<option value="" ${selVal ? '' : 'selected'} disabled>${esc(placeholder)}</option>`;
+  }
+  for (const { kind, groupLabel, designation, fallbackCount } of ROUTING_KINDS) {
+    const count = routingCount(kind, fallbackCount);
+    let opts = '';
+    for (let n = 1; n <= count; n++) {
+      const val = `${kind}:${n}`;
+      const name = consoleNameFor(kind, n);
+      const claimedBy = claims.get(val);
+      const isReserved = reserved.has(val);
+      const isSelected = val === selVal;
+      // The current selection is this bus's own routing -- never "in use".
+      const disabled = claimedBy && !isSelected;
+      let text = `${designation} ${n}` + (name ? `: ${name}` : '');
+      if (disabled) text += ` (in use: ${claimedBy})`;
+      else if (isReserved) text += ' (reserved)';
+      opts += `<option value="${val}" ${isSelected ? 'selected' : ''} ${disabled ? 'disabled' : ''}>${esc(text)}</option>`;
+    }
+    html += `<optgroup label="${esc(groupLabel)}">${opts}</optgroup>`;
+  }
+  return html;
+}
+
+/** Full field: the "Fed from" select + a freshness line + Refresh button. */
+function routingPickerFieldHtml({ selectId, selectedType, selectedNum, excludeBusId, placeholder }) {
+  return `<div class="frow"><label>Fed from</label>
+    <select id="${selectId}">${routingOptionsHtml({ selectedType, selectedNum, excludeBusId, placeholder })}</select></div>
+    <div class="frow" style="align-items:center;gap:8px">
+      <span id="${selectId}_fresh" class="hint" style="flex:1;margin:0">${esc(consoleNamesFreshness())}</span>
+      <button type="button" class="small secondary" id="${selectId}_refresh" style="width:auto">Refresh from console</button>
+    </div>`;
+}
+
+/** Attach listeners: reserved-destination confirm, Refresh button, and a lazy
+ *  first name read. Records the picker context so a later name read can
+ *  repopulate it in place. */
+function wireRoutingPicker({ selectId, excludeBusId, placeholder }) {
+  currentRoutingPickerCtx = { selectId, excludeBusId, placeholder };
+  const sel = $(selectId);
+  if (!sel) return;
+  sel.dataset.prev = sel.value;
+  const reserved = reservedRoutingSet();
+  sel.addEventListener('change', () => {
+    if (reserved.has(sel.value)) {
+      const label = sel.options[sel.selectedIndex].textContent.replace(' (reserved)', '');
+      if (!confirm(`${label} is a RESERVED destination.\n\nRoute this speaker there anyway?`)) {
+        sel.value = sel.dataset.prev || '';
+        return;
+      }
+    }
+    sel.dataset.prev = sel.value;
+  });
+  const btn = $(`${selectId}_refresh`);
+  if (btn) btn.onclick = () => refreshConsoleNamesFromConsole();
+  ensureConsoleNames();
+}
+
+/** Repopulate the open picker's options with freshly-read names (preserving
+ *  the selection) and update its freshness line + Refresh button state. */
+function refreshRoutingPickerUI() {
+  if (!currentRoutingPickerCtx) return;
+  const { selectId, excludeBusId, placeholder } = currentRoutingPickerCtx;
+  const sel = $(selectId);
+  if (sel) {
+    const cur = parseRoutingValue(sel.value);
+    sel.innerHTML = routingOptionsHtml({ selectedType: cur?.type, selectedNum: cur?.num, excludeBusId, placeholder });
+    sel.dataset.prev = sel.value;
+  }
+  const fresh = $(`${selectId}_fresh`);
+  if (fresh) fresh.textContent = consoleNamesFreshness();
+  const btn = $(`${selectId}_refresh`);
+  if (btn) { btn.disabled = consoleNamesLoading; btn.textContent = consoleNamesLoading ? 'Reading…' : 'Refresh from console'; }
 }
 
 /** Compact bar+number meter, glanceable mid-service — not a graph. Visible
@@ -1891,6 +2014,7 @@ function closeRoomGearPanel() {
 function renderRoomGearPanel(){
   const panel = $('roomGearPanel');
   if (!panel) return;
+  currentRoutingPickerCtx = null; // drop any stale picker; wireRoutingPicker re-sets it if one is drawn
   if (!roomGearPanel) { panel.innerHTML = ''; return; }
   if (roomGearPanel.kind === 'speaker') renderSpeakerGearPanel(panel);
   else renderPositionGearPanel(panel);
@@ -1917,8 +2041,6 @@ function renderRoomGearPanel(){
 function renderOrphanSpeakerConfig(panel, speaker){
   const C = appConfig.config;
   const defaultRole = 'main';
-  const defaultWtype = ROLE_WING_TYPE[defaultRole];
-  const defaultWnum = nextWingNum(C.buses, defaultWtype);
   const [defaultLo, defaultHi] = roleBandFor(defaultRole, C.system?.crossoverHz);
 
   const shareOptions = (C.physicalOutputs || []).map((o) => {
@@ -1940,15 +2062,10 @@ function renderOrphanSpeakerConfig(panel, speaker){
       ${C.physicalOutputs?.length ? `<option value="share">Shares with an existing speaker</option>` : ''}
     </select></div>
     <div id="cfg_sp_new_fields">
-      <div class="frow"><label>Routing type</label><select id="cfg_sp_wtype">
-        <option value="main" ${defaultWtype !== 'mtx' ? 'selected' : ''}>main</option>
-        <option value="mtx" ${defaultWtype === 'mtx' ? 'selected' : ''}>mtx</option>
-      </select></div>
-      <div class="frow"><label>Routing #</label><input type="number" id="cfg_sp_wnum" value="${defaultWnum}" min="1" max="64"></div>
+      ${routingPickerFieldHtml({ selectId: 'cfg_sp_routing', placeholder: 'Choose where this speaker is fed from…' })}
       <div class="frow"><label>Band lo Hz</label><input type="number" id="cfg_sp_lo" value="${defaultLo}" min="10" max="24000"></div>
       <div class="frow"><label>Band hi Hz</label><input type="number" id="cfg_sp_hi" value="${defaultHi}" min="10" max="24000"></div>
       <div class="frow"><label>Sweep trim dB</label><input type="number" id="cfg_sp_trim" value="0" min="-60" max="0" step="1"></div>
-      <p class="hint warn" id="cfg_sp_collision" style="display:none"></p>
     </div>
     <div id="cfg_sp_share_fields" style="display:none">
       <div class="frow"><label>Shares with</label><select id="cfg_sp_share_output">${shareOptions}</select></div>
@@ -1969,20 +2086,11 @@ function renderOrphanSpeakerConfig(panel, speaker){
   $('cfg_sp_mode').addEventListener('change', syncMode);
   syncMode();
 
-  const checkCollision = () => {
-    const wtype = $('cfg_sp_wtype').value, wnum = Number($('cfg_sp_wnum').value);
-    const collidingBus = C.buses.find((b) => b.wing?.type === wtype && b.wing?.num === wnum);
-    const el = $('cfg_sp_collision');
-    if (collidingBus) {
-      el.textContent = `⚠ ${wtype} ${wnum} is already used by "${collidingBus.label}" — that's a shared driver, not a routing conflict to fix by picking a different number. Switch "Routing" above to "Shares with an existing speaker" instead.`;
-      el.style.display = '';
-    } else {
-      el.style.display = 'none';
-    }
-  };
-  $('cfg_sp_wtype').addEventListener('change', checkCollision);
-  $('cfg_sp_wnum').addEventListener('input', checkCollision);
-  checkCollision();
+  // The picker itself disables destinations already claimed by another bus
+  // (shown "in use: …"), so a collision can't be picked here -- the old live
+  // collision hint is redundant. The share path stays available for a genuine
+  // passive split. The server still guards the real invariant (settings.js).
+  wireRoutingPicker({ selectId: 'cfg_sp_routing', placeholder: 'Choose where this speaker is fed from…' });
 
   $('gearClose').onclick = closeRoomGearPanel;
   $('cfgSpSave').onclick = () => saveOrphanSpeakerConfig(speaker);
@@ -2032,11 +2140,15 @@ async function saveOrphanSpeakerConfig(speaker) {
     return;
   }
 
-  const wtype = $('cfg_sp_wtype').value;
-  const wnum = Number($('cfg_sp_wnum').value);
+  const routing = parseRoutingValue($('cfg_sp_routing').value);
+  if (!routing) return showErr('Choose where this speaker is fed from.');
+  const { type: wtype, num: wnum } = routing;
+  // Backstop only -- the picker already disables claimed destinations, and the
+  // server rejects a genuine collision (settings.js). This turns that into a
+  // clear message instead of a raw validation string on the off chance one slips through.
   const collidingBus = C.buses.find((b) => b.wing?.type === wtype && b.wing?.num === wnum);
   if (collidingBus) {
-    return showErr(`Routing ${wtype} ${wnum} is already used by "${collidingBus.label}". Switch "Routing" to "Shares with an existing speaker" instead, or pick a different number.`);
+    return showErr(`${wtype === 'mtx' ? 'MTX' : 'MAIN'} ${wnum} is already used by "${collidingBus.label}". Switch "Routing" to "Shares with an existing speaker" instead.`);
   }
 
   const lo = Number($('cfg_sp_lo').value);
@@ -2119,11 +2231,7 @@ function renderSpeakerGearPanel(panel){
       ${shared ? `<p class="hint warn">This routing/band/role/trim is shared with: ${esc(otherOutputsOnBus.map((o) => o.label).join(', ') || bus.label)} — saving updates the ONE shared bus (affects the other output(s) too).</p>` : ''}
       <div class="frow"><label>Label</label><input type="text" id="gear_sp_label" value="${esc(output.label)}"></div>
       <label class="modeopt"><input type="checkbox" id="gear_sp_enabled" ${output.enabled !== false ? 'checked' : ''}><span><b>Enabled</b></span></label>
-      <div class="frow"><label>Routing type</label><select id="gear_sp_wtype">
-        <option value="main" ${bus.wing?.type !== 'mtx' ? 'selected' : ''}>main</option>
-        <option value="mtx" ${bus.wing?.type === 'mtx' ? 'selected' : ''}>mtx</option>
-      </select></div>
-      <div class="frow"><label>Routing #</label><input type="number" id="gear_sp_wnum" value="${bus.wing?.num ?? 1}" min="1" max="64"></div>
+      ${routingPickerFieldHtml({ selectId: 'gear_sp_routing', selectedType: bus.wing?.type, selectedNum: bus.wing?.num, excludeBusId: bus.id })}
       <div class="frow"><label>Band lo Hz</label><input type="number" id="gear_sp_lo" value="${bus.band?.[0] ?? 20}" min="10" max="24000"></div>
       <div class="frow"><label>Band hi Hz</label><input type="number" id="gear_sp_hi" value="${bus.band?.[1] ?? 20000}" min="10" max="24000"></div>
       <div class="frow"><label>Sweep trim dB</label><input type="number" id="gear_sp_trim" value="${bus.sweepTrimDb ?? 0}" min="-60" max="0" step="1"></div>
@@ -2154,6 +2262,7 @@ function renderSpeakerGearPanel(panel){
   $('gear_sp_role').addEventListener('change', () => {
     $('gear_sp_fillfields').style.display = $('gear_sp_role').value === 'fill' ? '' : 'none';
   });
+  wireRoutingPicker({ selectId: 'gear_sp_routing', excludeBusId: bus.id });
   $('gearClose').onclick = closeRoomGearPanel;
   $('gearSpSave').onclick = () => saveSpeakerGearPanel(output, bus);
   $('gearSpDelete').onclick = () => deleteSpeakerGearPanel(output, bus);
@@ -2175,8 +2284,9 @@ async function saveSpeakerGearPanel(output, bus) {
   const label = $('gear_sp_label').value.trim();
   if (!label) return showErr('Label is required.');
   const enabled = $('gear_sp_enabled').checked;
-  const wtype = $('gear_sp_wtype').value;
-  const wnum = Number($('gear_sp_wnum').value);
+  const routing = parseRoutingValue($('gear_sp_routing').value);
+  if (!routing) return showErr('Choose where this speaker is fed from.');
+  const { type: wtype, num: wnum } = routing;
   const lo = Number($('gear_sp_lo').value);
   const hi = Number($('gear_sp_hi').value);
   const trim = Number($('gear_sp_trim').value);

@@ -111,6 +111,27 @@ test('rejects a missing system section', () => {
   assert.ok(validateConfig(cfg).some((e) => /system\.crossoverHz/.test(e)));
 });
 
+test('accepts a valid system.reservedBuses list (and its absence)', () => {
+  const cfg = goodConfig();
+  cfg.system.reservedBuses = [{ type: 'mtx', num: 5 }, { type: 'main', num: 4 }];
+  assert.deepEqual(validateConfig(cfg), []);
+  const cfg2 = goodConfig();
+  delete cfg2.system.reservedBuses; // optional
+  assert.deepEqual(validateConfig(cfg2), []);
+});
+
+test('rejects a malformed system.reservedBuses entry', () => {
+  const bad1 = goodConfig();
+  bad1.system.reservedBuses = [{ type: 'aux', num: 5 }];
+  assert.ok(validateConfig(bad1).some((e) => /reservedBuses\[0\]\.type/.test(e)));
+  const bad2 = goodConfig();
+  bad2.system.reservedBuses = [{ type: 'mtx', num: 0 }];
+  assert.ok(validateConfig(bad2).some((e) => /reservedBuses\[0\]\.num/.test(e)));
+  const bad3 = goodConfig();
+  bad3.system.reservedBuses = { type: 'mtx', num: 5 }; // not an array
+  assert.ok(validateConfig(bad3).some((e) => /reservedBuses: must be an array/.test(e)));
+});
+
 test('rejects a band with lo >= hi', () => {
   const cfg = goodConfig();
   cfg.buses[0].band = [16000, 40];

@@ -3,6 +3,47 @@
 Running log of judgment calls made during autonomous work runs, so they can be
 reviewed and reversed if wrong.
 
+## 2026-07-17 — routing revamp, Workstream 2: Wing-native routing picker
+
+The old "Routing type" (main/mtx) + "Routing #" (free number) pair in both
+speaker-config forms (orphan-config and the gear panel) is replaced by ONE
+"Fed from" dropdown of real console destinations, each showing its live
+scribble-strip name from Workstream 1 ("MTX 6: FILL BALCONY", or bare "MTX 6"
+when un-named).
+
+- **Storage is untouched — only the input changes.** An option value is
+  `"type:num"`, parsed straight back into the existing `{type, num}` bus.wing
+  shape. No migration, no new fields; a saved config from before and after is
+  byte-identical for the same routing. This was the explicit constraint and it
+  kept the blast radius tiny (Workstream 4 will regression-test that the OSC
+  addresses produced are unchanged).
+- **In-use destinations are DISABLED in the dropdown, not just warned about.**
+  The picker reads current `config.buses` to mark any destination already
+  claimed by another bus as `disabled` with "(in use: <bus label>)". This
+  replaced the orphan form's old live "collision" hint entirely — you can't
+  pick a conflict now, so there's nothing to warn about mid-type. The
+  authority remains server-side `validateConfig` (the bus-routing-uniqueness
+  check from the prior feature); the client disabling is pure UX on top of it,
+  no duplicated validation logic. The bus being edited is excluded from
+  "in use" so its own current routing stays selectable.
+- **`config.system.reservedBuses` (seeded `[{type:'mtx', num:5}]`).** Reserved
+  destinations are shown but flagged "(reserved)" and require a native
+  `confirm()` to select (reverting the select on cancel) — matching the app's
+  existing confirm pattern. Validated in `settings.js` as an optional
+  `{type, num}[]`. Seeded with matrix 5 per the request (a matrix kept free,
+  e.g. for a recorder feed).
+- **The orphan/new path defaults to the placeholder "Choose where this speaker
+  is fed from…" rather than auto-picking the next free number.** Auto-suggest
+  would pick a destination the operator may not want; an explicit choice is
+  safer and matches the requested unrouted-speaker placeholder. (`nextWingNum`
+  is still used by the quick-add `createRoomSpeaker` flow, which is unchanged.)
+- **Names load lazily and refresh in place.** Opening either form triggers
+  `ensureConsoleNames()` (first lazy read); a "Refresh from console" button
+  next to the picker forces a re-read; a freshness line shows "names read N min
+  ago · X/Y answered" (or the mock / fail-loud states). When a read lands the
+  open picker's `<option>`s are repopulated in place, preserving the current
+  selection — no full form re-render, so in-progress edits aren't clobbered.
+
 ## 2026-07-17 — routing revamp, Workstream 1: console name reading (no fabricated names, ever)
 
 Foundation for the Wing-native routing picker: read main/matrix/bus
