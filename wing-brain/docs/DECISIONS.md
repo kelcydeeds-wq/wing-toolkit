@@ -3,6 +3,49 @@
 Running log of judgment calls made during autonomous work runs, so they can be
 reviewed and reversed if wrong.
 
+## 2026-07-17 — routing revamp, Workstream 3: interaction polish
+
+Room-map interaction pass on top of WS1/WS2.
+
+- **Single-level undo toast (5s) for drag AND delete.** A dedicated `#undoToast`
+  (interactive, unlike the text-only `#toast`) shows "Moved <label>" after a
+  drag and "Deleted …" after a delete, each with an Undo button. Undo restores
+  the exact pre-action snapshot: for a drag, re-PUT the prior x/y; for a delete
+  (which can cascade output→bus→speakers), re-PUT the captured objects in
+  DEPENDENCY order (bus + speakers first, then the output that references them)
+  — the reverse of the delete order. Only one undo is ever pending; a second
+  action lets the first window lapse. Removed the now-false "This cannot be
+  undone" text from the delete confirms.
+- **Selection glow doubles as the panel↔icon connector.** The old flat 2px ring
+  on the open icon became a shadow-blurred amber glow (`drawSelectionGlow`).
+  A literal drawn line from the HTML overlay panel to the canvas icon isn't
+  worth the coordinate plumbing; the glow makes "this icon is what the open
+  panel is about" unambiguous, and the panel header now shows the user-facing
+  label (not the raw id).
+- **Unrouted "!" badge**, distinct from the needs-positioning dashed ring:
+  amber dot + "!" on any speaker with no physicalOutput yet (tap → the WS-prior
+  Configure flow). Location vs routing are two different "needs attention"
+  states, drawn differently on purpose.
+- **≥44px touch targets, computed scale-aware.** Hit tests run in canvas-
+  internal pixels but the 44px rule is physical/CSS, and the canvas is scaled
+  down on a phone — so the radius is `22 * (cv.width/rect.width)` (a 44px CSS
+  diameter), not a fixed canvas value. With bigger radii two icons can overlap,
+  so hit selection picks the NEAREST target, not the first match.
+- **Arrow-key nudge (0.1 m) of the selected entity.** A document keydown moves
+  the open-panel speaker/position by 0.1 m (room +y is screen-down, so ArrowUp
+  = −y), optimistically redraws, keeps the numeric x/y fields in step, and
+  debounces the PUT (300 ms) so a held key doesn't spam writes. Ignored while a
+  field is focused — the numeric x/y inputs stay the exact-entry path.
+- **Wing-vocabulary copy sweep — scoped to real jargon, not every enum.** Fixed
+  the actual rule violations where "mtx" reached the user: the Buses-table Type
+  select (now "Main"/"Matrix"), and every place a routing was interpolated as
+  `${wing.type} ${num}` → the console designation "MTX 6"/"MAIN 6" (orphan
+  share label, discovery label). Also capitalized role/zone display labels in
+  the map-centric forms (Main/Sub/Fill, Under balcony). Left the Buses settings
+  TABLE's raw Type/# structure as-is (a power surface, not one of the two
+  speaker-map config forms WS2 converted) — converting it to the full picker
+  would be a separate follow-up.
+
 ## 2026-07-17 — routing revamp, Workstream 2: Wing-native routing picker
 
 The old "Routing type" (main/mtx) + "Routing #" (free number) pair in both

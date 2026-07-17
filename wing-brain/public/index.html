@@ -192,6 +192,19 @@
   #toast.show{opacity:1; transform:translate(-50%, 0) scale(1)}
   #toast.ok{border-color:var(--green); color:var(--green)}
   #toast.warn{border-color:var(--red); color:var(--red)}
+  /* Undo toast: like #toast but interactive (has an Undo button), so it needs
+     pointer-events and sits just above where #toast would appear. */
+  #undoToast{position:fixed; left:50%; bottom:140px; z-index:11;
+    display:flex; align-items:center; gap:14px; max-width:90vw;
+    background:var(--panel2); border:1px solid var(--line); color:var(--ink);
+    border-radius:10px; padding:9px 10px 9px 16px; font-size:14px; opacity:0; pointer-events:none;
+    box-shadow:0 10px 26px -12px rgba(0,0,0,.6);
+    transform:translate(-50%, 6px) scale(.97);
+    transition:opacity .22s, transform .22s cubic-bezier(.2,.8,.3,1)}
+  #undoToast.show{opacity:1; transform:translate(-50%, 0) scale(1); pointer-events:auto}
+  #undoToast button{min-height:36px; padding:0 14px; border-radius:8px; border:1px solid var(--amber);
+    background:transparent; color:var(--amber); font:inherit; font-weight:700; cursor:pointer; white-space:nowrap}
+  #undoToast button:hover{background:var(--amber); color:#0c0e10}
   .otable{overflow-x:auto}
   .otable input[type=text]{min-width:110px}
   .otable input[type=number]{width:64px; padding:6px}
@@ -420,6 +433,7 @@
   <div id="fab"><div class="inner" id="fabInner"></div></div>
 </div>
 <div id="toast"></div>
+<div id="undoToast"><span id="undoToastMsg"></span><button id="undoToastBtn">Undo</button></div>
 
 <script>
 const ws = new WebSocket(`ws://${location.host}`);
@@ -673,6 +687,50 @@ function refreshRoutingPickerUI() {
   const btn = $(`${selectId}_refresh`);
   if (btn) { btn.disabled = consoleNamesLoading; btn.textContent = consoleNamesLoading ? 'Reading…' : 'Refresh from console'; }
 }
+
+/* -------------------- arrow-key nudge of the selection ---------------- */
+// When a speaker/position is selected (its gear panel is open) on the Room Map
+// tab, arrow keys nudge it 0.1 m for fine placement -- the numeric x/y fields
+// stay for exact entry. Ignored while typing in any field.
+
+let nudgePutTimer = null;
+function nudgeSelected(key){
+  if (!roomGearPanel) return;
+  const { kind, id } = roomGearPanel;
+  const R = appConfig.room;
+  const ent = kind === 'speaker' ? R.speakers.find((s) => s.id === id) : R.positions.find((p) => p.id === id);
+  if (!ent) return;
+  const step = 0.1;
+  let x = ent.x, y = ent.y;
+  if (key === 'ArrowUp') y -= step;            // room +y is screen-down (see roomProjection)
+  else if (key === 'ArrowDown') y += step;
+  else if (key === 'ArrowLeft') x -= step;
+  else if (key === 'ArrowRight') x += step;
+  const c = clampToRoomBounds(Math.round(x * 100) / 100, Math.round(y * 100) / 100, R);
+  ent.x = c.x; ent.y = c.y;                     // optimistic; the PUT broadcast reconciles
+  const cv = $('roomMapEdit'); if (cv) drawRoomInteractive(cv);
+  if ($('gear_pos_x')) $('gear_pos_x').value = c.x; // keep the numeric fields in step
+  if ($('gear_pos_y')) $('gear_pos_y').value = c.y;
+
+  clearTimeout(nudgePutTimer);
+  nudgePutTimer = setTimeout(() => {
+    const url = `/api/${kind === 'speaker' ? 'speakers' : 'positions'}/${encodeURIComponent(id)}`;
+    const body = { ...ent };
+    if (kind === 'speaker' && body.needsPositioning) delete body.needsPositioning;
+    fetch(url, { method: 'PUT', headers: {'content-type':'application/json'}, body: JSON.stringify(body) })
+      .then((r) => r.json()).then((b) => { if (b && b.errors) showToast(b.errors.join(' · '), 'warn'); })
+      .catch((err) => showToast(String(err), 'warn'));
+  }, 300); // debounce: holding an arrow shouldn't spam PUTs
+}
+
+document.addEventListener('keydown', (e) => {
+  if (!settingsOpen || settingsTab !== 'room' || !roomGearPanel) return;
+  if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(e.key)) return;
+  const tag = document.activeElement?.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return; // don't hijack field editing
+  e.preventDefault();
+  nudgeSelected(e.key);
+});
 
 /** Compact bar+number meter, glanceable mid-service — not a graph. Visible
  *  whenever the monitor has a reading and settings isn't open (screen space). */
@@ -1424,6 +1482,34 @@ function drawToggleGlyph(ctx, cx, cy, enabled){
 }
 
 
+/** The "this is the selected icon, and the open panel is about it" cue: a
+ *  glowing amber ring. Stronger than a plain stroke so it reads as the visual
+ *  tie between the config panel and its map icon. */
+function drawSelectionGlow(ctx, x, y, r){
+  ctx.save();
+  ctx.shadowColor = 'rgba(255,180,84,.9)';
+  ctx.shadowBlur = 14;
+  ctx.strokeStyle = '#ffb454';
+  ctx.lineWidth = 2.5;
+  ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI*2); ctx.stroke();
+  ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI*2); ctx.stroke(); // second pass intensifies the bloom
+  ctx.restore();
+}
+
+/** Amber "!" badge — an unrouted speaker (no physicalOutput feeds it yet). A
+ *  tap opens the Configure flow. Distinct from the dashed needs-positioning
+ *  ring, which is about location, not routing. */
+function drawUnroutedBadge(ctx, x, y){
+  ctx.save();
+  ctx.shadowColor = 'rgba(0,0,0,.5)'; ctx.shadowBlur = 4;
+  ctx.fillStyle = '#ffb454';
+  ctx.beginPath(); ctx.arc(x+13, y-13, 6.5, 0, Math.PI*2); ctx.fill();
+  ctx.restore();
+  ctx.fillStyle = '#0c0e10';
+  ctx.font = 'bold 9px "Clear Sans", sans-serif';
+  ctx.fillText('!', x+11.4, y-10);
+}
+
 function drawRoomInteractive(cv){
   const R = appConfig?.room, C = appConfig?.config;
   if (!R || !C || !cv) return;
@@ -1447,10 +1533,7 @@ function drawRoomInteractive(cv){
     // readout so a drag doubles as a precise measurement tool.
     const scale = dragging ? 1.35 : 1;
 
-    if (isOpen) {
-      ctx.strokeStyle = '#ffb454'; ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.arc(x, y, 16, 0, Math.PI*2); ctx.stroke();
-    }
+    if (isOpen) drawSelectionGlow(ctx, x, y, 17);
     ctx.globalAlpha = enabled ? 1 : 0.35;
     drawSpeakerGlyph(ctx, x, y, sp.id.startsWith('fill') ? '#6ab7ff' : '#ff6b5e', scale);
     ctx.globalAlpha = 1;
@@ -1463,6 +1546,9 @@ function drawRoomInteractive(cv){
       const tx = x+16, ty = y-15;
       drawToggleGlyph(ctx, tx, ty, enabled);
       roomEditToggleTargets.push({ kind: 'speaker', id: sp.id, output: out, cx: tx, cy: ty });
+    } else if (sp.needsPositioning !== true) {
+      // Unrouted (no output feeds it) and already placed -> flag it needs routing.
+      drawUnroutedBadge(ctx, x, y);
     }
 
     // Stage 5: needsPositioning speakers (freshly created from discovery,
@@ -1496,10 +1582,7 @@ function drawRoomInteractive(cv){
     const color = p.zone==='balcony' ? '#7a6a4a' : p.zone==='under_balcony' ? '#4a5568' : '#3a4048';
     const isOpen = roomGearPanel?.kind === 'position' && roomGearPanel.id === p.id;
 
-    if (isOpen) {
-      ctx.strokeStyle = '#ffb454'; ctx.lineWidth = 2;
-      ctx.beginPath(); ctx.arc(x, y, 16, 0, Math.PI*2); ctx.stroke();
-    }
+    if (isOpen) drawSelectionGlow(ctx, x, y, 17);
     ctx.globalAlpha = enabled ? 1 : 0.35;
     drawPositionGlyph(ctx, x, y, color, dragging ? 11 : 8, { zone: p.zone });
     ctx.font = '11px "Clear Sans", sans-serif';
@@ -1550,6 +1633,7 @@ async function commitRoomDrag(kind, id, x, y){
   const { x: cx, y: cy } = clampToRoomBounds(x, y, R);
   if (cx === orig.x && cy === orig.y) return; // tap without an actual move -- nothing to save
   const url = `/api/${kind === 'speaker' ? 'speakers' : 'positions'}/${encodeURIComponent(id)}`;
+  const prevSnapshot = { ...orig }; // exact pre-drag state, for single-level undo
   // A successful drag is the user's confirmation the speaker's now at its
   // real position -- clear needsPositioning (Stage 5) in this SAME PUT, not
   // a second write. Drop the key entirely (undefined-means-false/absent, same
@@ -1565,10 +1649,18 @@ async function commitRoomDrag(kind, id, x, y){
       showToast(body.errors ? body.errors.join(' · ') : (body.error || `HTTP ${res.status}`), 'warn');
       try { appConfig = await (await fetch('/api/config')).json(); } catch { /* keep stale appConfig, next broadcast will fix it */ }
       if (settingsOpen) renderSettings();
+      return;
     }
     // On success, the server's 'config'/'room' broadcasts (received by every
     // open tab, including this one) are the sole redraw trigger -- no local
     // optimistic update here, so we never fight the broadcast.
+    const label = kind === 'speaker'
+      ? (findOutputForSpeaker(id, appConfig.config.physicalOutputs)?.label || titleCaseFromId(id))
+      : (prevSnapshot.label || id);
+    showUndoToast(`Moved ${label}`, () => {
+      fetch(url, { method: 'PUT', headers: {'content-type':'application/json'}, body: JSON.stringify(prevSnapshot) })
+        .catch((err) => showToast(String(err), 'warn'));
+    });
   } catch (err) {
     showToast(String(err), 'warn');
   }
@@ -1617,10 +1709,17 @@ const DRAG_THRESHOLD_PX = 6; // canvas-pixel movement before a press-and-hold be
 function wireRoomEditor(cv){
   roomEditDrag = null;
   let pendingTap = null; // { kind, id, startX, startY, pointerId, entity }
-  const hitRadius = (t) => t.r ?? 14;
 
   cv.addEventListener('pointerdown', (e) => {
     const pt = canvasPointFromEvent(cv, e);
+    // Hit tests run in canvas-internal pixels, but the ≥44px touch-target rule
+    // is a PHYSICAL/CSS size -- on a phone the canvas is scaled down, so a
+    // fixed canvas-px radius would be a much smaller finger target. Convert:
+    // a 22px CSS radius (44px diameter) becomes 22*cssToCanvas canvas px.
+    const rect = cv.getBoundingClientRect();
+    const cssToCanvas = rect.width ? cv.width / rect.width : 1;
+    const touchR = Math.max(15, 22 * cssToCanvas);          // primary icon: >=44px CSS
+    const toggleR = Math.max(13, 16 * cssToCanvas);          // toggle: smaller, checked first so it wins its zone
 
     // Add mode (Stage 3): once a type is chosen, the next tap places the new
     // entity instead of starting a drag or hitting an existing icon --
@@ -1633,13 +1732,24 @@ function wireRoomEditor(cv){
       return;
     }
 
-    const toggle = roomEditToggleTargets.find((t) => Math.hypot(t.cx-pt.x, t.cy-pt.y) <= 12);
+    // Nearest-within-radius (not first-match): with 44px targets two icons can
+    // both be in range, so the closest one must win or taps feel misdirected.
+    const nearest = (targets, radiusFn) => {
+      let best = null, bestD = Infinity;
+      for (const t of targets) {
+        const d = Math.hypot(t.cx-pt.x, t.cy-pt.y);
+        if (d <= radiusFn(t) && d < bestD) { best = t; bestD = d; }
+      }
+      return best;
+    };
+
+    const toggle = nearest(roomEditToggleTargets, () => toggleR);
     if (toggle) {
       e.preventDefault();
       toggleRoomEnabled(toggle);
       return;
     }
-    const hit = roomEditHitTargets.find((t) => Math.hypot(t.cx-pt.x, t.cy-pt.y) <= hitRadius(t));
+    const hit = nearest(roomEditHitTargets, (t) => Math.max(t.r ?? 14, touchR));
     if (!hit) return;
     e.preventDefault();
     cv.setPointerCapture(e.pointerId);
@@ -1859,7 +1969,7 @@ function renderRoomAddPanel(){
       <h3>New position</h3>
       <div class="frow"><label>Label</label><input type="text" id="addPosLabel" placeholder="e.g. Front Center"></div>
       <div class="frow"><label>Zone</label><select id="addPosZone">
-        <option value="main">main</option><option value="balcony">balcony</option><option value="under_balcony">under_balcony</option>
+        <option value="main">Main</option><option value="balcony">Balcony</option><option value="under_balcony">Under balcony</option>
       </select></div>
       <p id="addRoomError" class="hint warn" style="display:none"></p>
       <div class="cardfoot">
@@ -1874,10 +1984,10 @@ function renderRoomAddPanel(){
   const disc = roomAddMode.discovery; // Stage 5: set when this add was launched from a discovery row
   panel.innerHTML = `<div class="card">
     <h3>New speaker</h3>
-    ${disc ? `<p class="hint">Discovered on the console as ${esc(disc.type)} ${disc.num}${disc.name ? ` ("${esc(disc.name)}")` : ''} — placed at the room's center for now. Drag it to its real position once you confirm what it is; its output starts disabled.</p>` : ''}
+    ${disc ? `<p class="hint">Discovered on the console as ${disc.type === 'mtx' ? 'MTX' : 'MAIN'} ${disc.num}${disc.name ? ` ("${esc(disc.name)}")` : ''} — placed at the room's center for now. Drag it to its real position once you confirm what it is; its output starts disabled.</p>` : ''}
     <div class="frow"><label>Label</label><input type="text" id="addSpLabel" placeholder="e.g. Balcony Rail L" value="${esc(disc?.name || '')}"></div>
-    <div class="frow"><label>Type</label><select id="addSpRole">
-      <option value="main">main</option><option value="sub">sub</option><option value="fill">fill</option>
+    <div class="frow"><label>Role</label><select id="addSpRole">
+      <option value="main">Main</option><option value="sub">Sub</option><option value="fill">Fill</option>
     </select></div>
     <p class="hint">Creates a positioned speaker plus a matching bus + physical output, marked unconfirmed until you set its real console routing.</p>
     <p id="addRoomError" class="hint warn" style="display:none"></p>
@@ -2046,7 +2156,7 @@ function renderOrphanSpeakerConfig(panel, speaker){
   const shareOptions = (C.physicalOutputs || []).map((o) => {
     const bus = C.buses.find((b) => b.id === o.sourceBusId);
     const driverLabels = o.sharedDrivers ? o.sharedDrivers.drivers.map((d) => d.label).join(' / ') : (o.speakerId || '—');
-    const routing = bus?.wing ? `${bus.wing.type} ${bus.wing.num}` : '?';
+    const routing = bus?.wing ? `${bus.wing.type === 'mtx' ? 'MTX' : 'MAIN'} ${bus.wing.num}` : '?';
     return `<option value="${esc(o.id)}">${esc(o.label)} (${routing} — ${esc(driverLabels)})</option>`;
   }).join('');
 
@@ -2055,7 +2165,7 @@ function renderOrphanSpeakerConfig(panel, speaker){
     <p class="hint">This map point has no routing yet. Give it its own output, or attach it to an existing one if it's physically on the same amp channel (passive split, like Side Fills).</p>
     <div class="frow"><label>Label</label><input type="text" id="cfg_sp_label" placeholder="e.g. Balcony Rail L"></div>
     <div class="frow"><label>Role</label><select id="cfg_sp_role">
-      <option value="main">main</option><option value="sub">sub</option><option value="fill">fill</option>
+      <option value="main">Main</option><option value="sub">Sub</option><option value="fill">Fill</option>
     </select></div>
     <div class="frow"><label>Routing</label><select id="cfg_sp_mode">
       <option value="new">New dedicated output</option>
@@ -2227,7 +2337,7 @@ function renderSpeakerGearPanel(panel){
 
   panel.innerHTML = `
     <div class="card" style="margin-top:10px">
-      <h3 style="margin:0 0 8px">Speaker: ${esc(speakerId)}</h3>
+      <h3 style="margin:0 0 8px">${esc(output.label || speakerId)}</h3>
       ${shared ? `<p class="hint warn">This routing/band/role/trim is shared with: ${esc(otherOutputsOnBus.map((o) => o.label).join(', ') || bus.label)} — saving updates the ONE shared bus (affects the other output(s) too).</p>` : ''}
       <div class="frow"><label>Label</label><input type="text" id="gear_sp_label" value="${esc(output.label)}"></div>
       <label class="modeopt"><input type="checkbox" id="gear_sp_enabled" ${output.enabled !== false ? 'checked' : ''}><span><b>Enabled</b></span></label>
@@ -2236,9 +2346,9 @@ function renderSpeakerGearPanel(panel){
       <div class="frow"><label>Band hi Hz</label><input type="number" id="gear_sp_hi" value="${bus.band?.[1] ?? 20000}" min="10" max="24000"></div>
       <div class="frow"><label>Sweep trim dB</label><input type="number" id="gear_sp_trim" value="${bus.sweepTrimDb ?? 0}" min="-60" max="0" step="1"></div>
       <div class="frow"><label>Role</label><select id="gear_sp_role">
-        <option value="main" ${bus.role === 'main' ? 'selected' : ''}>main</option>
-        <option value="sub" ${bus.role === 'sub' ? 'selected' : ''}>sub</option>
-        <option value="fill" ${bus.role === 'fill' ? 'selected' : ''}>fill</option>
+        <option value="main" ${bus.role === 'main' ? 'selected' : ''}>Main</option>
+        <option value="sub" ${bus.role === 'sub' ? 'selected' : ''}>Sub</option>
+        <option value="fill" ${bus.role === 'fill' ? 'selected' : ''}>Fill</option>
       </select></div>
       <div id="gear_sp_fillfields" style="display:${bus.role === 'fill' ? '' : 'none'}">
         <div class="frow"><label>Align to</label><input type="text" value="mains" disabled></div>
@@ -2367,7 +2477,7 @@ async function deleteSpeakerGearPanel(output, bus) {
   if (orphanedSpeakerIds.length) cascadeParts.push(`speaker point(s) ${orphanedSpeakerIds.join(', ')}`);
 
   if (!cascadeParts.length) {
-    if (!confirm(`Delete physical output "${output.label}"? This cannot be undone.`)) return;
+    if (!confirm(`Delete physical output "${output.label}"?`)) return;
     return performOutputDelete(output, bus, false, []);
   }
 
@@ -2388,6 +2498,14 @@ async function deleteSpeakerGearPanel(output, bus) {
  *  swallowed, even though we only reach here after client-side checks say
  *  they should be safe (another tab could have changed things meanwhile). */
 async function performOutputDelete(output, bus, cascadeBus, speakerIds) {
+  // Snapshot everything about to be removed, so a single-level Undo can
+  // recreate it. PUT is create-or-update, so restore just re-PUTs the exact
+  // prior objects -- in DEPENDENCY order on undo (bus + speakers first, then
+  // the output that references them), the reverse of the delete order below.
+  const busSnap = cascadeBus ? { ...bus } : null;
+  const speakerSnaps = speakerIds.map((sid) => appConfig.room.speakers.find((s) => s.id === sid)).filter(Boolean);
+  const outputSnap = { ...output };
+
   const del = async (url) => {
     const res = await fetch(url, { method: 'DELETE' });
     let body = {};
@@ -2410,8 +2528,15 @@ async function performOutputDelete(output, bus, cascadeBus, speakerIds) {
     if (spRes.ok) msg += `, speaker "${sid}"`;
     else showToast(`Speaker "${sid}" delete failed: ${errText(spRes.body)}`, 'warn');
   }
-  showToast(msg, 'ok');
   closeRoomGearPanel();
+  const put = (url, obj) => fetch(url, { method: 'PUT', headers: {'content-type':'application/json'}, body: JSON.stringify(obj) });
+  showUndoToast(msg, async () => {
+    try {
+      if (busSnap) await put(`/api/buses/${encodeURIComponent(busSnap.id)}`, busSnap);
+      for (const sp of speakerSnaps) await put(`/api/speakers/${encodeURIComponent(sp.id)}`, sp);
+      await put(`/api/outputs/${encodeURIComponent(outputSnap.id)}`, outputSnap);
+    } catch (err) { showToast(`Undo failed: ${err}`, 'warn'); }
+  });
 }
 
 /** Position gear panel: room.positions[] is flat, one PUT does everything. */
@@ -2430,9 +2555,9 @@ function renderPositionGearPanel(panel) {
       <h3 style="margin:0 0 8px">Position: ${esc(p.label)}</h3>
       <div class="frow"><label>Label</label><input type="text" id="gear_pos_label" value="${esc(p.label)}"></div>
       <div class="frow"><label>Zone</label><select id="gear_pos_zone">
-        <option value="main" ${p.zone === 'main' ? 'selected' : ''}>main</option>
-        <option value="balcony" ${p.zone === 'balcony' ? 'selected' : ''}>balcony</option>
-        <option value="under_balcony" ${p.zone === 'under_balcony' ? 'selected' : ''}>under_balcony</option>
+        <option value="main" ${p.zone === 'main' ? 'selected' : ''}>Main</option>
+        <option value="balcony" ${p.zone === 'balcony' ? 'selected' : ''}>Balcony</option>
+        <option value="under_balcony" ${p.zone === 'under_balcony' ? 'selected' : ''}>Under balcony</option>
       </select></div>
       <div class="frow"><label>Weight</label><input type="number" id="gear_pos_weight" value="${p.weight ?? 1}" min="0" step="0.1"></div>
       <div class="frow"><label>X (m)</label><input type="number" id="gear_pos_x" value="${p.x}" step="0.01"></div>
@@ -2484,13 +2609,18 @@ async function savePositionGearPanel(orig) {
  *  verbatim if it's referenced (verifyPosition / loudness reference /
  *  alignPositions). */
 async function deletePositionGearPanel(p) {
-  if (!confirm(`Delete position "${p.label}"? This cannot be undone.`)) return;
+  if (!confirm(`Delete position "${p.label}"?`)) return;
+  const snapshot = { ...p }; // for single-level undo
   try {
     const res = await fetch(`/api/positions/${encodeURIComponent(p.id)}`, { method: 'DELETE' });
     const body = await res.json();
     if (!res.ok) { showToast(body.error || `HTTP ${res.status}`, 'warn'); return; }
-    showToast(`Deleted position "${p.label}"`, 'ok');
     closeRoomGearPanel();
+    showUndoToast(`Deleted position "${p.label}"`, () => {
+      fetch(`/api/positions/${encodeURIComponent(snapshot.id)}`, {
+        method: 'PUT', headers: {'content-type':'application/json'}, body: JSON.stringify(snapshot)
+      }).catch((err) => showToast(`Undo failed: ${err}`, 'warn'));
+    });
   } catch (err) { showToast(String(err), 'warn'); }
 }
 
@@ -2642,6 +2772,26 @@ function showToast(msg, cls){
   toastTimer = setTimeout(() => { t.className = ''; }, cls === 'warn' ? 6000 : 2200);
 }
 
+/** Single-level undo toast: "Moved Side Fills [Undo]", auto-dismiss after 5s.
+ *  Only ONE undo is ever pending -- a second action replaces the first (its
+ *  window simply passes). `onUndo` runs at most once, on tap. */
+let undoToastTimer = null;
+let pendingUndo = null;
+function showUndoToast(msg, onUndo){
+  pendingUndo = onUndo;
+  $('undoToastMsg').textContent = msg;
+  const t = $('undoToast');
+  t.classList.add('show');
+  $('undoToastBtn').onclick = () => { const fn = pendingUndo; hideUndoToast(); if (fn) fn(); };
+  clearTimeout(undoToastTimer);
+  undoToastTimer = setTimeout(hideUndoToast, 5000);
+}
+function hideUndoToast(){
+  $('undoToast').classList.remove('show');
+  pendingUndo = null;
+  clearTimeout(undoToastTimer);
+}
+
 const dirtyCards = new Set();
 function anyCardDirty(){ return dirtyCards.size > 0; }
 function markDirty(card, yes = true){
@@ -2768,8 +2918,8 @@ function renderSettings(){
       </select></td>
       <td><input type="checkbox" class="b_stereo" ${b.stereo ? 'checked' : ''}></td>
       <td><select class="b_type">
-        <option value="main" ${b.wing?.type !== 'mtx' ? 'selected' : ''}>main</option>
-        <option value="mtx" ${b.wing?.type === 'mtx' ? 'selected' : ''}>mtx</option>
+        <option value="main" ${b.wing?.type !== 'mtx' ? 'selected' : ''}>Main</option>
+        <option value="mtx" ${b.wing?.type === 'mtx' ? 'selected' : ''}>Matrix</option>
       </select></td>
       <td><input type="number" class="b_num" value="${b.wing?.num ?? 1}" min="1" max="64"></td>
       <td><input type="checkbox" class="b_confirmed" ${b.wing?.confirmed ? 'checked' : ''}></td>
