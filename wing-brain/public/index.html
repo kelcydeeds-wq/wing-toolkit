@@ -1027,7 +1027,6 @@ function updatePosHalo(cv, rm, posId){
 let roomEditDrag = null;             // { kind, id, curX, curY, pointerId } world coords, mid-drag
 let roomEditHitTargets = [];         // [{kind,id,cx,cy,r}] rebuilt every draw, canvas-space px
 let roomEditToggleTargets = [];      // [{kind,id,output?,cx,cy}] same
-let roomEditGearTargets = [];        // [{kind,id,cx,cy}] same -- Stage 4 settings-panel glyph
 
 // Add-mode state (Stage 3), null when inactive. { kind: null } = "+" tapped,
 // choosing speaker/position. { kind, placed:false } = type chosen, waiting
@@ -1051,10 +1050,6 @@ function findOutputForSpeaker(speakerId, physicalOutputs){
   return null;
 }
 
-/** Round power-toggle chip -- a filled dark disc, colored ring, and a power
- *  glyph (arc + tick) instead of the old flat checkbox square, matched in
- *  size/weight to drawGearGlyph so the two overlay controls read as one
- *  designed pair rather than two unrelated bits of chrome. */
 /** Round toggle chip -- filled solid (green=enabled/dark=disabled) with a
  *  bold high-contrast checkmark or X drawn INSIDE the fill. Replaces an
  *  earlier open-arc "power" glyph that, at the thin stroke widths a small
@@ -1082,35 +1077,6 @@ function drawToggleGlyph(ctx, cx, cy, enabled){
   ctx.lineCap = 'butt'; ctx.lineJoin = 'miter';
 }
 
-/** Small gear glyph (Stage 4) -- opens the settings panel for the icon it's
- *  attached to. Same filled-chip language as drawToggleGlyph so the two
- *  overlay glyphs read as a matched pair. Four bold, thick rectangular
- *  teeth (not six hairline strokes) -- thin radiating lines blur into an
- *  indistinct "flower" at typical render sizes/pixel density; a filled
- *  chip with bold high-contrast teeth stays a legible gear at any size. */
-function drawGearGlyph(ctx, cx, cy, active){
-  const r = 9;
-  ctx.save();
-  ctx.shadowColor = 'rgba(0,0,0,.5)'; ctx.shadowBlur = 4; ctx.shadowOffsetY = 1;
-  ctx.fillStyle = active ? '#ffb454' : '#232830';
-  ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI*2); ctx.fill();
-  ctx.restore();
-  ctx.strokeStyle = active ? '#ffb454' : '#5a616b';
-  ctx.lineWidth = 1.5;
-  ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI*2); ctx.stroke();
-  const toothColor = active ? '#0c0e10' : '#8b919a';
-  ctx.fillStyle = toothColor;
-  for (let i = 0; i < 4; i++) {
-    ctx.save();
-    ctx.translate(cx, cy);
-    ctx.rotate((i / 4) * Math.PI * 2 + Math.PI / 4);
-    ctx.fillRect(-1.5, -7.5, 3, 4.5);
-    ctx.restore();
-  }
-  ctx.beginPath(); ctx.arc(cx, cy, 3.4, 0, Math.PI*2); ctx.fillStyle = toothColor; ctx.fill();
-  ctx.beginPath(); ctx.arc(cx, cy, 1.5, 0, Math.PI*2);
-  ctx.fillStyle = active ? '#ffb454' : '#232830'; ctx.fill();
-}
 
 function drawRoomInteractive(cv){
   const R = appConfig?.room, C = appConfig?.config;
@@ -1122,7 +1088,6 @@ function drawRoomInteractive(cv){
 
   roomEditHitTargets = [];
   roomEditToggleTargets = [];
-  roomEditGearTargets = [];
 
   for (const sp of R.speakers || []) {
     const dragging = roomEditDrag && roomEditDrag.kind === 'speaker' && roomEditDrag.id === sp.id;
@@ -1130,26 +1095,29 @@ function drawRoomInteractive(cv){
     const x = X(wx), y = Y(wy);
     const out = findOutputForSpeaker(sp.id, C.physicalOutputs);
     const enabled = out ? out.enabled !== false : true;
+    const isOpen = roomGearPanel?.kind === 'speaker' && roomGearPanel.id === sp.id;
     // Dragging lifts the icon: bigger + stronger shadow, same "picked up off
     // the table" cue a CAD/design tool gives you, plus a live coordinate
     // readout so a drag doubles as a precise measurement tool.
     const scale = dragging ? 1.35 : 1;
 
+    if (isOpen) {
+      ctx.strokeStyle = '#ffb454'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(x, y, 16, 0, Math.PI*2); ctx.stroke();
+    }
     ctx.globalAlpha = enabled ? 1 : 0.35;
     drawSpeakerGlyph(ctx, x, y, sp.id.startsWith('fill') ? '#6ab7ff' : '#ff6b5e', scale);
     ctx.globalAlpha = 1;
     if (dragging) drawLabelPill(ctx, `${wx.toFixed(2)}, ${wy.toFixed(2)} m`, x, y - 22, { color:'rgba(255,180,84,.95)' });
 
+    // A plain tap (no drag) opens this speaker's settings panel directly --
+    // see wireRoomEditor()'s tap-vs-drag threshold. No separate gear icon.
     roomEditHitTargets.push({ kind: 'speaker', id: sp.id, cx: x, cy: y, r: 15 });
     if (out) {
       const tx = x+16, ty = y-15;
       drawToggleGlyph(ctx, tx, ty, enabled);
       roomEditToggleTargets.push({ kind: 'speaker', id: sp.id, output: out, cx: tx, cy: ty });
     }
-    const gx = x-16, gy = y-15;
-    const gearActive = roomGearPanel?.kind === 'speaker' && roomGearPanel.id === sp.id;
-    drawGearGlyph(ctx, gx, gy, gearActive);
-    roomEditGearTargets.push({ kind: 'speaker', id: sp.id, cx: gx, cy: gy });
 
     // Stage 5: needsPositioning speakers (freshly created from discovery,
     // never dragged) get an unmissable dashed amber ring + badge + label --
@@ -1180,7 +1148,12 @@ function drawRoomInteractive(cv){
     const x = X(wx), y = Y(wy);
     const enabled = p.enabled !== false;
     const color = p.zone==='balcony' ? '#7a6a4a' : p.zone==='under_balcony' ? '#4a5568' : '#3a4048';
+    const isOpen = roomGearPanel?.kind === 'position' && roomGearPanel.id === p.id;
 
+    if (isOpen) {
+      ctx.strokeStyle = '#ffb454'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(x, y, 16, 0, Math.PI*2); ctx.stroke();
+    }
     ctx.globalAlpha = enabled ? 1 : 0.35;
     drawPositionGlyph(ctx, x, y, color, dragging ? 11 : 8, { zone: p.zone });
     ctx.font = '11px "Clear Sans", sans-serif';
@@ -1189,14 +1162,12 @@ function drawRoomInteractive(cv){
     ctx.globalAlpha = 1;
     if (dragging) drawLabelPill(ctx, `${wx.toFixed(2)}, ${wy.toFixed(2)} m`, x, y - 22, { color:'rgba(255,180,84,.95)' });
 
+    // A plain tap (no drag) opens this position's settings panel directly --
+    // see wireRoomEditor()'s tap-vs-drag threshold. No separate gear icon.
     roomEditHitTargets.push({ kind: 'position', id: p.id, cx: x, cy: y, r: 15 });
     const tx = x+16, ty = y-16;
     drawToggleGlyph(ctx, tx, ty, enabled);
     roomEditToggleTargets.push({ kind: 'position', id: p.id, cx: tx, cy: ty });
-    const gx = x-16, gy = y-16;
-    const gearActive = roomGearPanel?.kind === 'position' && roomGearPanel.id === p.id;
-    drawGearGlyph(ctx, gx, gy, gearActive);
-    roomEditGearTargets.push({ kind: 'position', id: p.id, cx: gx, cy: gy });
   }
 }
 
@@ -1282,18 +1253,31 @@ async function toggleRoomEnabled(target){
   } catch (err) { showToast(String(err), 'warn'); }
 }
 
+const DRAG_THRESHOLD_PX = 6; // canvas-pixel movement before a press-and-hold becomes a drag, not a tap
+
 /** Wire pointer events on the Settings page's interactive room canvas. Called
  *  fresh on every renderSettings() since the canvas node itself is rebuilt
- *  each time (innerHTML replace). */
+ *  each time (innerHTML replace).
+ *
+ *  There is no separate gear icon anymore -- tapping a speaker/position's
+ *  body opens its settings panel directly, and dragging it repositions it.
+ *  The two live on the same pointerdown target, so pointerdown does NOT
+ *  decide which one this is; it just remembers a "pending tap" (start
+ *  point + which entity) and captures the pointer. pointermove promotes
+ *  that to a real drag only once movement crosses DRAG_THRESHOLD_PX (finger/
+ *  mouse jitter during a tap must never register as an accidental nudge).
+ *  pointerup then either commits a drag (if one started) or opens the gear
+ *  panel (if the pointer never moved) -- never both. */
 function wireRoomEditor(cv){
   roomEditDrag = null;
+  let pendingTap = null; // { kind, id, startX, startY, pointerId, entity }
   const hitRadius = (t) => t.r ?? 14;
 
   cv.addEventListener('pointerdown', (e) => {
     const pt = canvasPointFromEvent(cv, e);
 
     // Add mode (Stage 3): once a type is chosen, the next tap places the new
-    // entity instead of starting a drag or hitting an existing icon/toggle --
+    // entity instead of starting a drag or hitting an existing icon --
     // checked first, ahead of every other branch below.
     if (roomAddMode && roomAddMode.kind && !roomAddMode.placed) {
       e.preventDefault();
@@ -1303,12 +1287,6 @@ function wireRoomEditor(cv){
       return;
     }
 
-    const gear = roomEditGearTargets.find((t) => Math.hypot(t.cx-pt.x, t.cy-pt.y) <= 12);
-    if (gear) {
-      e.preventDefault();
-      openRoomGearPanel(gear.kind, gear.id);
-      return;
-    }
     const toggle = roomEditToggleTargets.find((t) => Math.hypot(t.cx-pt.x, t.cy-pt.y) <= 12);
     if (toggle) {
       e.preventDefault();
@@ -1323,12 +1301,18 @@ function wireRoomEditor(cv){
       ? appConfig.room.speakers.find((s) => s.id === hit.id)
       : appConfig.room.positions.find((p) => p.id === hit.id);
     if (!entity) return;
-    roomEditDrag = { kind: hit.kind, id: hit.id, curX: entity.x, curY: entity.y, pointerId: e.pointerId };
-    cv.classList.add('dragging');
-    drawRoomInteractive(cv);
+    pendingTap = { kind: hit.kind, id: hit.id, startX: pt.x, startY: pt.y, pointerId: e.pointerId, entity };
   });
 
   cv.addEventListener('pointermove', (e) => {
+    if (pendingTap && pendingTap.pointerId === e.pointerId && !roomEditDrag) {
+      const pt = canvasPointFromEvent(cv, e);
+      if (Math.hypot(pt.x - pendingTap.startX, pt.y - pendingTap.startY) < DRAG_THRESHOLD_PX) return;
+      // Promote to a real drag now that movement is unambiguous.
+      roomEditDrag = { kind: pendingTap.kind, id: pendingTap.id,
+        curX: pendingTap.entity.x, curY: pendingTap.entity.y, pointerId: e.pointerId };
+      cv.classList.add('dragging');
+    }
     if (!roomEditDrag || roomEditDrag.pointerId !== e.pointerId) return;
     e.preventDefault();
     const proj = roomProjection(appConfig.room, cv);
@@ -1338,15 +1322,28 @@ function wireRoomEditor(cv){
     drawRoomInteractive(cv); // local optimistic redraw during the drag only
   });
 
-  const endDrag = (e) => {
+  cv.addEventListener('pointerup', (e) => {
     cv.classList.remove('dragging');
-    if (!roomEditDrag || roomEditDrag.pointerId !== e.pointerId) return;
-    const { kind, id, curX, curY } = roomEditDrag;
-    roomEditDrag = null;
-    commitRoomDrag(kind, id, curX, curY);
-  };
-  cv.addEventListener('pointerup', endDrag);
-  cv.addEventListener('pointercancel', endDrag);
+    if (roomEditDrag && roomEditDrag.pointerId === e.pointerId) {
+      const { kind, id, curX, curY } = roomEditDrag;
+      roomEditDrag = null;
+      pendingTap = null;
+      commitRoomDrag(kind, id, curX, curY);
+      return;
+    }
+    // Never crossed the drag threshold -> a plain tap, open its settings.
+    if (pendingTap && pendingTap.pointerId === e.pointerId) {
+      const { kind, id } = pendingTap;
+      pendingTap = null;
+      openRoomGearPanel(kind, id);
+    }
+  });
+
+  cv.addEventListener('pointercancel', (e) => {
+    cv.classList.remove('dragging');
+    if (pendingTap?.pointerId === e.pointerId) pendingTap = null;
+    if (roomEditDrag?.pointerId === e.pointerId) roomEditDrag = null; // interrupted -- no commit, no tap
+  });
 }
 
 /** Sizes #roomMapEdit's actual pixel buffer to exactly fill its .mapwrap
@@ -1383,24 +1380,26 @@ function roomTabHtml(R){
     </div>
     <div class="mapwrap"><canvas id="roomMapEdit"></canvas><div id="roomAddPanel"></div><div id="roomGearPanel"></div></div>
     <div class="roomtab-footer">
-      <p class="hint" style="margin:0 0 8px">Drag a speaker or measurement position to reposition it — saves on release. Tap the small toggle next to an icon to enable/disable it (dimmed = disabled). Tap the gear icon to edit its full settings (routing, band, role, delete, etc).</p>
       <div class="frow"><label>Verify position</label><select id="set_verify_pos">${R.positions.map((p) =>
         `<option value="${esc(p.id)}" ${p.id === R.verifyPosition ? 'selected' : ''}>${esc(p.label)}</option>`).join('')}</select></div>
-      <div class="cardfoot" style="justify-content:space-between">
-        <span class="hint" style="margin:0;flex:1">${esc(R.name)} · ${R.width} m wide · ${R.positions.length} positions · ${(R.speakers || []).length} speakers</span>
-        <button class="small" id="save_room" disabled style="width:auto">Save</button>
-      </div>
+      <p class="hint" style="margin:2px 0 0">${esc(R.name)} · ${R.width} m wide · ${R.positions.length} positions · ${(R.speakers || []).length} speakers · tap an icon to edit, drag to move</p>
     </div>
   </div>`;
 }
 
-/** Wires everything roomTabHtml() just rendered. Mirrors the old general-tab
- *  wiring (set_verify_pos/save_room, wireRoomEditor, add-toggle button,
- *  renderRoomAddPanel/renderRoomGearPanel) -- unchanged logic, just called
- *  from the Room Map tab's own branch instead of unconditionally. */
+/** Wires everything roomTabHtml() just rendered.
+ *
+ *  Verify-position saves immediately on change, like every other control on
+ *  this tab (drag saves on release, the enable/disable toggle saves on tap,
+ *  gear-panel edits save on their own in-panel Save) -- an earlier version
+ *  gated it behind a separate disabled-until-dirty "Save" button, which was
+ *  both the one control on the page that DIDN'T auto-save and confusing to
+ *  boot (nothing else here explains "grayed out until you touch THIS
+ *  specific dropdown"). One less button, one less thing to explain. */
 function wireRoomTab(){
-  $('set_verify_pos').addEventListener('change', () => markDirty('room'));
-  $('save_room').onclick = () => saveConfig('room', { room: { verifyPosition: $('set_verify_pos').value } });
+  $('set_verify_pos').addEventListener('change', () => {
+    saveConfig('room', { room: { verifyPosition: $('set_verify_pos').value } });
+  });
 
   sizeRoomMapEdit();
   wireRoomEditor($('roomMapEdit'));
@@ -1632,9 +1631,10 @@ async function createRoomSpeaker(x, y, opts = {}) {
 }
 
 /* ---------- interactive room editor: gear/settings panel (Stage 4) ---------- */
-// Tapping the gear glyph on a speaker or position icon opens an inline panel
-// (same #roomAddPanel-style pattern as Stage 3) with the full field set for
-// that item. Speaker icons are really a {physicalOutput, bus} pair (see
+// Tapping a speaker or position's body -- without dragging it, see
+// wireRoomEditor()'s tap-vs-drag threshold -- opens an inline panel (same
+// #roomAddPanel-style pattern as Stage 3) with the full field set for that
+// item. Speaker icons are really a {physicalOutput, bus} pair (see
 // findOutputForSpeaker() above + CLAUDE.md's two-layer schema note) --
 // position icons are flat room.positions[] entries, one PUT does it.
 
@@ -1644,8 +1644,9 @@ function titleCaseFromId(id) {
   return String(id).split('_').filter(Boolean).map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
 }
 
-/** Tapped a gear glyph: open (or retarget) the settings panel for that icon.
- *  Swaps contents in place -- never stacks a second panel. */
+/** A plain tap (no drag) on a speaker/position: open (or retarget) the
+ *  settings panel for that icon. Swaps contents in place -- never stacks a
+ *  second panel. */
 function openRoomGearPanel(kind, id) {
   roomGearPanel = { kind, id };
   if (roomAddMode) { roomAddMode = null; renderRoomAddPanel(); } // see setRoomAddMode()'s note
