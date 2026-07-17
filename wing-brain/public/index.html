@@ -170,6 +170,14 @@
   .modeopt input{width:18px; height:18px; margin-top:2px; accent-color:var(--amber)}
   .modeopt b{font-size:14px}
   .modeopt small{display:block; color:var(--dim); font-size:12px}
+  .tuneselect-head{display:flex; align-items:baseline; justify-content:space-between; margin:16px 0 2px}
+  .tuneselect-head:first-of-type{margin-top:4px}
+  .tuneselect-head h3{font-size:11px; letter-spacing:.08em; text-transform:uppercase; color:var(--dim); margin:0; font-weight:600}
+  .tuneselect-head .links{font-size:12px}
+  .tuneselect-head .links a{color:var(--blue); cursor:pointer; text-decoration:none}
+  .tuneselect-head .links a:not(:last-child)::after{content:'·'; color:var(--line); margin:0 6px}
+  .tuneselect-list .modeopt{border-bottom:1px dashed var(--line)}
+  .tuneselect-list .modeopt:last-child{border-bottom:0}
   #wingBanner{border-radius:10px; padding:9px 12px; font-size:13px; margin:-6px 0 14px;
     border:1px solid var(--line)}
   #wingBanner.okb{background:rgba(93,211,158,.08); border-color:var(--green); color:var(--green)}
@@ -341,6 +349,29 @@
     </div>
   </section>
 
+  <!-- FULL TUNE SELECTION (client-side navigation only, before a session starts) -->
+  <section id="tuneSelectView" class="hidden">
+    <div class="card">
+      <h2>Full Tune — what to measure</h2>
+      <p class="hint" style="margin:0 0 8px">Uncheck anything you want to skip this round. This is the same enabled/disabled state as the Room Map tab, so it sticks until you change it again — not just a one-time filter.</p>
+      <div class="tuneselect-head">
+        <h3>Speakers</h3>
+        <span class="links"><a id="tselOutputsAll">All</a><a id="tselOutputsNone">None</a></span>
+      </div>
+      <div class="tuneselect-list" id="tselOutputs"></div>
+      <div class="tuneselect-head">
+        <h3>Positions</h3>
+        <span class="links"><a id="tselPositionsAll">All</a><a id="tselPositionsNone">None</a></span>
+      </div>
+      <div class="tuneselect-list" id="tselPositions"></div>
+      <p id="tselError" class="hint warn" style="display:none; margin-top:10px"></p>
+      <div class="cardfoot" style="justify-content:space-between">
+        <button class="secondary" id="btnTuneSelectBack" style="width:auto">Back</button>
+        <button class="amber" id="btnTuneSelectStart" style="width:auto">Start Full Tune</button>
+      </div>
+    </div>
+  </section>
+
   <!-- PREFLIGHT -->
   <section id="preflightView" class="hidden">
     <div class="card">
@@ -401,6 +432,7 @@ let appConfig = null;      // { config, room } — the server's live runtime con
 let settingsOpen = false;
 let settingsTab = 'general'; // 'general' | 'room' -- which Settings tab is showing
 let pickingTuneMode = false; // client-side only -- true while tuneModeView (Quick Verify vs Full Tune) is showing
+let pickingFullTuneSelection = false; // client-side only -- true while tuneSelectView (which speakers/positions) is showing
 let wingStatus = { state: 'untested', detail: '' }; // untested | connected | unreachable
 let loudness = null;       // last { levelDb, status, targetDb, ... } from the loudness monitor
 let loudnessHistory = [];
@@ -518,7 +550,7 @@ function fmtAlertReadCounts(counts){
 function setStatus(t, cls){ const s=$('status'); if(!s) return; s.textContent=t; s.className=cls||''; }
 
 function show(id){
-  for (const v of ['home','tuneModeView','sessionView','wizardView','reviewView','verifyView','preflightView','settingsView']) $(v).classList.add('hidden');
+  for (const v of ['home','tuneModeView','tuneSelectView','sessionView','wizardView','reviewView','verifyView','preflightView','settingsView']) $(v).classList.add('hidden');
   $(id).classList.remove('hidden');
 }
 
@@ -544,6 +576,42 @@ function renderPreflightSummary(){
   if (!results.length) { card.classList.add('hidden'); return; }
   card.classList.remove('hidden');
   $('preflightSummary').innerHTML = results.map(preflightRow).join('');
+}
+
+// Snapshot of physicalOutputs/positions captured whenever tuneSelectView is
+// (re-)rendered -- the Start handler diffs checkbox state against THIS, not
+// the live (possibly-since-mutated-by-another-device) appConfig, so a
+// concurrent edit landing mid-wizard can't produce a diff against data the
+// user never actually saw.
+let tuneSelectSnapshot = null;
+
+/** Builds the Full Tune "what to measure" checklist from the current
+ *  config/room (fetched fresh by pickFull's handler right before this
+ *  runs, so it reflects genuinely current enabled state, not whatever
+ *  Settings happened to have cached last). Called once when entering the
+ *  view, NOT from render()'s dispatch -- render() fires on every
+ *  websocket 'session' broadcast, and re-running this on every tick would
+ *  wipe out whatever the user is mid-way through checking/unchecking. */
+function renderTuneSelectView(){
+  const C = appConfig.config, R = appConfig.room;
+  tuneSelectSnapshot = {
+    outputs: structuredClone(C.physicalOutputs || []),
+    positions: structuredClone(R.positions || [])
+  };
+
+  const outputRow = (o) => {
+    const bus = C.buses.find((b) => b.id === o.sourceBusId);
+    return `<label class="modeopt"><input type="checkbox" class="tsel_output" data-id="${esc(o.id)}" ${o.enabled !== false ? 'checked' : ''}>
+      <span><b>${esc(o.label)}</b><small>${esc(bus?.label ?? o.sourceBusId)}</small></span></label>`;
+  };
+  $('tselOutputs').innerHTML = (C.physicalOutputs || []).map(outputRow).join('') || '<p class="hint">No physical outputs configured.</p>';
+
+  const positionRow = (p) => `<label class="modeopt"><input type="checkbox" class="tsel_position" data-id="${esc(p.id)}" ${p.enabled !== false ? 'checked' : ''}>
+    <span><b>${esc(p.label)}</b><small>${esc(p.zone)} · weight ${p.weight ?? 1}</small></span></label>`;
+  $('tselPositions').innerHTML = (R.positions || []).map(positionRow).join('') || '<p class="hint">No measurement positions configured.</p>';
+
+  $('tselError').style.display = 'none';
+  $('btnTuneSelectStart').disabled = false;
 }
 
 function fmtWhen(iso){
@@ -606,6 +674,7 @@ function render(){
 
   if (!session || session.state === 'idle') {
     $('posHalo')?.classList.add('hidden');
+    if (pickingFullTuneSelection) { show('tuneSelectView'); return; }
     if (pickingTuneMode) { show('tuneModeView'); return; }
     show('home'); renderPreflightSummary();
     return;
@@ -2141,7 +2210,74 @@ $('exitBtn').onclick = () => {
 $('btnMeasureTune').onclick = () => { pickingTuneMode = true; render(); };
 $('btnTuneModeBack').onclick = () => { pickingTuneMode = false; render(); };
 $('pickVerify').onclick = () => { pickingTuneMode = false; send({action:'start', mode:'verify'}); };
-$('pickFull').onclick = () => { pickingTuneMode = false; send({action:'start', mode:'full'}); };
+// Full Tune goes through the "what to measure" checklist first, not
+// straight to start -- fetch fresh (not the possibly-stale cached
+// appConfig) so the checklist reflects genuinely current enabled state.
+$('pickFull').onclick = async () => {
+  try { appConfig = await (await fetch('/api/config')).json(); }
+  catch { showToast('Could not load the speaker/position list', 'warn'); return; }
+  pickingTuneMode = false;
+  pickingFullTuneSelection = true;
+  renderTuneSelectView();
+  render();
+};
+$('btnTuneSelectBack').onclick = () => { pickingFullTuneSelection = false; pickingTuneMode = true; render(); };
+$('tselOutputsAll').onclick = () => document.querySelectorAll('.tsel_output').forEach((c) => c.checked = true);
+$('tselOutputsNone').onclick = () => document.querySelectorAll('.tsel_output').forEach((c) => c.checked = false);
+$('tselPositionsAll').onclick = () => document.querySelectorAll('.tsel_position').forEach((c) => c.checked = true);
+$('tselPositionsNone').onclick = () => document.querySelectorAll('.tsel_position').forEach((c) => c.checked = false);
+
+/** Diffs checked state against tuneSelectSnapshot (captured when the view
+ *  was rendered, not live appConfig -- see its own comment), PUTs only
+ *  what actually changed via the same endpoints the Room Map tab already
+ *  uses, then starts the Full Tune. Refuses to start with zero speakers
+ *  or zero positions selected -- session.start('full') has no guard
+ *  against an empty position/output list, and would land in a broken
+ *  "position undefined of 0" state rather than a clean error. */
+$('btnTuneSelectStart').onclick = async () => {
+  const outputChecks = [...document.querySelectorAll('.tsel_output')];
+  const positionChecks = [...document.querySelectorAll('.tsel_position')];
+  const anyOutput = outputChecks.some((c) => c.checked);
+  const anyPosition = positionChecks.some((c) => c.checked);
+  if (!anyOutput || !anyPosition) {
+    const el = $('tselError');
+    el.textContent = !anyOutput && !anyPosition ? 'Select at least one speaker and one position.'
+      : !anyOutput ? 'Select at least one speaker.' : 'Select at least one position.';
+    el.style.display = '';
+    return;
+  }
+
+  const btn = $('btnTuneSelectStart');
+  btn.disabled = true;
+  const put = (url, body) => fetch(url, { method: 'PUT', headers: {'content-type':'application/json'}, body: JSON.stringify(body) })
+    .then(async (res) => ({ ok: res.ok, body: await res.json().catch(() => ({})) }));
+
+  try {
+    const outputPuts = outputChecks
+      .map((c) => ({ id: c.dataset.id, checked: c.checked, orig: tuneSelectSnapshot.outputs.find((o) => o.id === c.dataset.id) }))
+      .filter((x) => x.orig && (x.orig.enabled !== false) !== x.checked)
+      .map((x) => put(`/api/outputs/${encodeURIComponent(x.id)}`, { ...x.orig, enabled: x.checked }));
+    const positionPuts = positionChecks
+      .map((c) => ({ id: c.dataset.id, checked: c.checked, orig: tuneSelectSnapshot.positions.find((p) => p.id === c.dataset.id) }))
+      .filter((x) => x.orig && (x.orig.enabled !== false) !== x.checked)
+      .map((x) => put(`/api/positions/${encodeURIComponent(x.id)}`, { ...x.orig, enabled: x.checked }));
+
+    const results = await Promise.all([...outputPuts, ...positionPuts]);
+    const failed = results.filter((r) => !r.ok);
+    if (failed.length) {
+      showToast(failed.map((f) => f.body.error || (f.body.errors || []).join(' · ')).filter(Boolean).join(' · ') || 'Failed to save selection', 'warn');
+      btn.disabled = false;
+      return;
+    }
+  } catch (err) {
+    showToast(String(err), 'warn');
+    btn.disabled = false;
+    return;
+  }
+
+  pickingFullTuneSelection = false;
+  send({action:'start', mode:'full'});
+};
 $('btnPreflight').onclick = () => send({action:'preflight'});
 $('btnSummation').onclick = () => send({action:'summation_check'});
 
