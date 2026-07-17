@@ -3,6 +3,57 @@
 Running log of judgment calls made during autonomous work runs, so they can be
 reviewed and reversed if wrong.
 
+## 2026-07-17 — Room Map: Configure flow for orphaned speakers + shared-driver isolation testing
+
+Previously, a map point with no `physicalOutput` referencing it just showed a
+dead-end "no physical output references this speaker yet" message. Replaced
+with a real Configure form (`renderOrphanSpeakerConfig`/
+`saveOrphanSpeakerConfig` in `public/index.html`): label, role, and a
+"Routing" choice between a brand-new dedicated output (auto-suggests the next
+free `wing.type`/`num` via the existing `ROLE_WING_TYPE`/`nextWingNum`
+helpers, plus a role-appropriate band via `roleBandFor`) or attaching as an
+additional driver on an *existing* physicalOutput's `sharedDrivers` list
+(passive-split pair, e.g. Side Fills).
+
+- **Two independent entry points into "shared driver," not one.** The user's
+  request specifically called out reactive collision detection ("if it
+  happens to have the same routing... notify and give options"), but a
+  config-time picker is strictly better when the user already *knows* two
+  speakers are on one amp channel — no need to let them create a colliding
+  bus first just to get told to undo it. Built both: `cfg_sp_mode` lets you
+  pick "Shares with an existing speaker" up front, AND `checkCollision()`
+  live-validates the typed `wing.type`+`num` against `C.buses` and shows an
+  inline warning steering you to the share path if you pick a routing that's
+  already claimed. Neither replaces the other.
+- **Routing-collision validation moved server-side, not just client-side
+  hinting.** Added a `busRouting` map keyed `"type:num"` inside the buses
+  validation loop in `src/config/settings.js` — two buses can no longer
+  silently claim the same Wing address. This is a real invariant (one Wing
+  bus fader/EQ/dyn cannot serve two independent signal paths), not just a UX
+  nicety, so it belongs in `validateConfig`, which every config write path
+  (including tests and future callers) goes through. The error message
+  explicitly points at the `sharedDrivers` alternative rather than just
+  saying "invalid," since the collision is usually a legitimate shared-speaker
+  setup expressed the wrong way, not a typo.
+- **`testSharedDriverIsolation(physicalOutputId)` reuses
+  `runSharedDriverWizard()` standalone**, outside a Full Tune, gated to
+  `idle|done|review` states (not `wizard`/`measuring`, matching how the
+  existing wizard is invoked elsewhere). Runs at `room.verifyPosition`
+  (falling back to `room.positions[0]`) since re-testing driver isolation
+  doesn't need a full room walk — you just confirmed the physical patch,
+  you want an immediate answer. New `test_shared_driver` websocket action in
+  `src/server.js`; surfaced as a "Test driver isolation now" button on the
+  gear panel for any *already-configured* output with
+  `sharedDrivers?.count > 1`, separate from the pre-existing `shared` note
+  (which covers a different concept — one bus stereo-linked or fanned out to
+  multiple physicalOutputs — left untouched).
+- **The orphan-config "share" path's success toast doubles as the "notify"
+  moment** ("now shares X with Y — tap it again to test isolation") rather
+  than auto-launching the wizard on save. Auto-launching mid-save felt like
+  it would surprise a user who just wanted to finish wiring the map; the
+  isolation test is available immediately after via the same gear panel
+  either way.
+
 ## 2026-07-16 — crossover handling, Piece 3: summation verification sweep
 
 Post-Apply (and standalone) verification that the sub+main crossover sums

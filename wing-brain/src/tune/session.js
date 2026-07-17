@@ -550,6 +550,46 @@ export class TuneSession {
   }
 
   /**
+   * Standalone entry point for the shared-driver isolation wizard --
+   * everything runSharedDriverWizard()/wizardContinue()/wizardConfirm()
+   * already do (unplug/confirm/sweep per driver, then a combined sweep,
+   * then checkDriverHealth()'s polarity/level/response comparison), just
+   * invoked directly instead of nested inside a Full Tune's per-position
+   * loop. Lets an operator confirm a newly-wired shared driver (see the
+   * Room Map "Configure" flow's share option) right after setting it up,
+   * instead of waiting for the next full room walk. this.state is
+   * 'wizard' for the duration either way, so the client's existing wizard
+   * UI needs no changes at all to drive this -- only a new trigger for it.
+   */
+  async testSharedDriverIsolation(physicalOutputId) {
+    if (!['idle', 'done', 'review'].includes(this.state)) {
+      throw new Error('cannot test driver isolation while a session is running');
+    }
+    const physicalOutput = this.cfg.physicalOutputs.find((o) => o.id === physicalOutputId);
+    if (!physicalOutput) throw new Error(`physical output "${physicalOutputId}" not found`);
+    if (!(physicalOutput.sharedDrivers?.count > 1)) {
+      throw new Error(`"${physicalOutput.label}" is not a shared-driver output -- nothing to isolate-test`);
+    }
+    const bus = this.busFor(physicalOutput);
+    if (!bus) throw new Error(`"${physicalOutput.label}" references a missing bus "${physicalOutput.sourceBusId}"`);
+    const pos = this.room.positions.find((p) => p.id === this.room.verifyPosition) || this.room.positions[0];
+    if (!pos) throw new Error('no measurement position configured');
+
+    this.emit('info', { message: `Testing driver isolation for ${physicalOutput.label} at ${pos.label}…` });
+    try {
+      await this.runSharedDriverWizard(physicalOutput, bus, pos);
+    } finally {
+      // runSharedDriverWizard() is normally nested inside ready()'s per-
+      // output loop, which does this same unmuteAll()+state reset once for
+      // the WHOLE loop after it finishes -- standalone, there's no outer
+      // loop to do it, so this method is responsible for its own cleanup.
+      await this.wing.unmuteAll(this.activeBuses());
+      this.state = 'idle';
+      this.emit('session', this.snapshot());
+    }
+  }
+
+  /**
    * Pre-flight: play a short blip on each enabled physical output and
    * confirm signal returns before committing to a full guided session.
    * Shared-driver outputs are NOT walked through the wizard here — this is

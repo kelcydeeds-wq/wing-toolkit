@@ -155,6 +155,20 @@ test('rejects duplicate bus ids and bad routing', () => {
   assert.ok(validateConfig(cfg2).some((e) => /wing\.type/.test(e)));
 });
 
+test('rejects two buses claiming the same routing address (type+num), even across different types', () => {
+  const cfg = goodConfig();
+  // buses[0] is "mains" (main/1), buses[1] is "sub" (main/2) -- collide them.
+  cfg.buses[1].wing.type = cfg.buses[0].wing.type;
+  cfg.buses[1].wing.num = cfg.buses[0].wing.num;
+  const errors = validateConfig(cfg);
+  assert.ok(errors.some((e) => /wing:.*already used by bus "mains"/.test(e)), errors.join(' | '));
+
+  // A bus keeping ITS OWN existing routing (re-saved unchanged) must not
+  // trip this -- only a genuine second claimant should.
+  const cfg2 = goodConfig();
+  assert.deepEqual(validateConfig(cfg2), []);
+});
+
 test('rejects duplicate physical output ids and an unknown sourceBusId', () => {
   const cfg = goodConfig();
   cfg.physicalOutputs[1].id = cfg.physicalOutputs[0].id;

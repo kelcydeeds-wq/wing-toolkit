@@ -291,3 +291,59 @@ test('session.restoreAllPatches() delegates to wing.restoreAllPatches() and repo
   assert.deepEqual(restored, ['side_fills_out']);
   assert.ok(log.some((e) => e.event === 'info' && /Restored 1 patch/.test(e.payload.message)));
 });
+
+/* ------------------------- standalone driver isolation test ------------------------- */
+// testSharedDriverIsolation() is the SAME wizard state machine
+// (runSharedDriverWizard/wizardContinue/wizardConfirm) entered directly
+// instead of nested inside ready()'s per-position loop -- these tests cover
+// its own entry/exit (guards, cleanup back to idle), not the wizard step
+// logic itself, which the tests above already cover thoroughly.
+
+test('testSharedDriverIsolation runs the same wizard standalone and returns to idle (not "measuring") when done', async () => {
+  const audio = { playAndCapture: async () => cleanCapture(20) };
+  const session = newSession({ config: sharedOutputConfig(), room: miniRoom, audio, wing: fakeWing(), emit: () => {} });
+
+  const testPromise = session.testSharedDriverIsolation('side_fills_out');
+  await Promise.resolve(); await Promise.resolve();
+  assert.equal(session.state, 'wizard');
+  assert.equal(session.wizard.physicalOutputId, 'side_fills_out');
+
+  await driveWizardToCompletion(session);
+  await testPromise;
+
+  assert.equal(session.state, 'idle', 'standalone entry point resets to idle -- there is no surrounding ready() loop to leave it "measuring" for');
+  assert.equal(session.driverHealthReports.length, 1);
+});
+
+test('testSharedDriverIsolation uses room.verifyPosition, falling back to the first position when unset', async () => {
+  const audio = { playAndCapture: async () => cleanCapture(20) };
+  const roomNoVerify = { ...miniRoom, verifyPosition: 'not_a_real_id' };
+  const session = newSession({ config: sharedOutputConfig(), room: roomNoVerify, audio, wing: fakeWing(), emit: () => {} });
+
+  const testPromise = session.testSharedDriverIsolation('side_fills_out');
+  await Promise.resolve(); await Promise.resolve();
+  assert.equal(session.wizard.pos.id, 'p1', 'falls back to the first room position');
+
+  await driveWizardToCompletion(session);
+  await testPromise;
+});
+
+test('testSharedDriverIsolation throws for an unknown physical output id', async () => {
+  const session = newSession({ config: sharedOutputConfig(), room: miniRoom, audio: {}, wing: fakeWing(), emit: () => {} });
+  await assert.rejects(() => session.testSharedDriverIsolation('not_a_real_output'), /not found/);
+});
+
+test('testSharedDriverIsolation throws for an output that is not actually a shared driver', async () => {
+  const bus = config.buses.find((b) => b.id === 'sub');
+  const physicalOutput = config.physicalOutputs.find((o) => o.id === 'sub_out');
+  const cfg = { ...config, buses: [bus], physicalOutputs: [physicalOutput] };
+  const session = newSession({ config: cfg, room: miniRoom, audio: {}, wing: fakeWing(), emit: () => {} });
+  await assert.rejects(() => session.testSharedDriverIsolation('sub_out'), /not a shared-driver output/);
+});
+
+test('testSharedDriverIsolation refuses to run while a session is already in progress', async () => {
+  const audio = { playAndCapture: async () => cleanCapture(20) };
+  const session = newSession({ config: sharedOutputConfig(), room: miniRoom, audio, wing: fakeWing(), emit: () => {} });
+  session.start('verify'); // state -> waiting_position
+  await assert.rejects(() => session.testSharedDriverIsolation('side_fills_out'), /cannot test driver isolation while a session is running/);
+});

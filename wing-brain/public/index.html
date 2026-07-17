@@ -1830,6 +1830,175 @@ function renderRoomGearPanel(){
   else renderPositionGearPanel(panel);
 }
 
+/**
+ * A speaker map point with no physicalOutput yet (e.g. one of room.json's
+ * "future" fill locations) used to be a dead end here -- "nothing to
+ * configure." This gives it a real setup flow with two paths:
+ *   - "New dedicated output": pick a role + routing number, get a fresh
+ *     bus + physicalOutput (same shape createRoomSpeaker() already builds
+ *     for a brand-new speaker, minus the speaker-creation step -- this one
+ *     already exists and already has a position).
+ *   - "Shares with an existing speaker": this speaker is driven off the
+ *     SAME physical amp channel as an already-wired one (a passive split,
+ *     exactly like Side Fills) -- pick which existing output from a
+ *     dropdown and it's appended to that output's sharedDrivers, no new
+ *     bus/routing number involved at all.
+ * The "new" path ALSO live-checks the typed routing number against every
+ * existing bus and warns immediately if it collides -- a safety net for
+ * whoever didn't realize this was a shared driver and picked "new" anyway
+ * (the server rejects a genuine collision either way, see settings.js).
+ */
+function renderOrphanSpeakerConfig(panel, speaker){
+  const C = appConfig.config;
+  const defaultRole = 'main';
+  const defaultWtype = ROLE_WING_TYPE[defaultRole];
+  const defaultWnum = nextWingNum(C.buses, defaultWtype);
+  const [defaultLo, defaultHi] = roleBandFor(defaultRole, C.system?.crossoverHz);
+
+  const shareOptions = (C.physicalOutputs || []).map((o) => {
+    const bus = C.buses.find((b) => b.id === o.sourceBusId);
+    const driverLabels = o.sharedDrivers ? o.sharedDrivers.drivers.map((d) => d.label).join(' / ') : (o.speakerId || '—');
+    const routing = bus?.wing ? `${bus.wing.type} ${bus.wing.num}` : '?';
+    return `<option value="${esc(o.id)}">${esc(o.label)} (${routing} — ${esc(driverLabels)})</option>`;
+  }).join('');
+
+  panel.innerHTML = `<div class="card" style="margin-top:10px">
+    <h3 style="margin:0 0 8px">Configure: ${esc(speaker.id)}</h3>
+    <p class="hint">This map point has no routing yet. Give it its own output, or attach it to an existing one if it's physically on the same amp channel (passive split, like Side Fills).</p>
+    <div class="frow"><label>Label</label><input type="text" id="cfg_sp_label" placeholder="e.g. Balcony Rail L"></div>
+    <div class="frow"><label>Role</label><select id="cfg_sp_role">
+      <option value="main">main</option><option value="sub">sub</option><option value="fill">fill</option>
+    </select></div>
+    <div class="frow"><label>Routing</label><select id="cfg_sp_mode">
+      <option value="new">New dedicated output</option>
+      ${C.physicalOutputs?.length ? `<option value="share">Shares with an existing speaker</option>` : ''}
+    </select></div>
+    <div id="cfg_sp_new_fields">
+      <div class="frow"><label>Routing type</label><select id="cfg_sp_wtype">
+        <option value="main" ${defaultWtype !== 'mtx' ? 'selected' : ''}>main</option>
+        <option value="mtx" ${defaultWtype === 'mtx' ? 'selected' : ''}>mtx</option>
+      </select></div>
+      <div class="frow"><label>Routing #</label><input type="number" id="cfg_sp_wnum" value="${defaultWnum}" min="1" max="64"></div>
+      <div class="frow"><label>Band lo Hz</label><input type="number" id="cfg_sp_lo" value="${defaultLo}" min="10" max="24000"></div>
+      <div class="frow"><label>Band hi Hz</label><input type="number" id="cfg_sp_hi" value="${defaultHi}" min="10" max="24000"></div>
+      <div class="frow"><label>Sweep trim dB</label><input type="number" id="cfg_sp_trim" value="0" min="-60" max="0" step="1"></div>
+      <p class="hint warn" id="cfg_sp_collision" style="display:none"></p>
+    </div>
+    <div id="cfg_sp_share_fields" style="display:none">
+      <div class="frow"><label>Shares with</label><select id="cfg_sp_share_output">${shareOptions}</select></div>
+      <p class="hint">Added as an additional driver on that output. Test polarity/level/response between drivers — separated, then together — via the guided isolation wizard: during your next Full Tune automatically, or right away once saved.</p>
+    </div>
+    <p id="cfgSpError" class="hint warn" style="display:none"></p>
+    <div class="cardfoot">
+      <button class="small secondary" id="gearClose">Close</button>
+      <button class="small" id="cfgSpSave">Save</button>
+    </div>
+  </div>`;
+
+  const syncMode = () => {
+    const sharing = $('cfg_sp_mode').value === 'share';
+    $('cfg_sp_new_fields').style.display = sharing ? 'none' : '';
+    $('cfg_sp_share_fields').style.display = sharing ? '' : 'none';
+  };
+  $('cfg_sp_mode').addEventListener('change', syncMode);
+  syncMode();
+
+  const checkCollision = () => {
+    const wtype = $('cfg_sp_wtype').value, wnum = Number($('cfg_sp_wnum').value);
+    const collidingBus = C.buses.find((b) => b.wing?.type === wtype && b.wing?.num === wnum);
+    const el = $('cfg_sp_collision');
+    if (collidingBus) {
+      el.textContent = `⚠ ${wtype} ${wnum} is already used by "${collidingBus.label}" — that's a shared driver, not a routing conflict to fix by picking a different number. Switch "Routing" above to "Shares with an existing speaker" instead.`;
+      el.style.display = '';
+    } else {
+      el.style.display = 'none';
+    }
+  };
+  $('cfg_sp_wtype').addEventListener('change', checkCollision);
+  $('cfg_sp_wnum').addEventListener('input', checkCollision);
+  checkCollision();
+
+  $('gearClose').onclick = closeRoomGearPanel;
+  $('cfgSpSave').onclick = () => saveOrphanSpeakerConfig(speaker);
+}
+
+/** Save for renderOrphanSpeakerConfig() -- either appends `speaker` as a
+ *  new sharedDrivers entry on an existing output (no new bus, no new
+ *  routing number), or creates a fresh bus+physicalOutput for it (mirrors
+ *  createRoomSpeaker(), minus the speaker-creation step -- this speaker
+ *  point already exists). Re-checks the routing collision server-side-
+ *  shaped (not just relying on the live hint) before attempting a "new"
+ *  save, so a stale/unnoticed warning can't slip through as two buses
+ *  silently claiming one address (settings.js rejects that anyway, but a
+ *  clear client-side message beats a raw validation-error string). */
+async function saveOrphanSpeakerConfig(speaker) {
+  const errEl = $('cfgSpError');
+  const showErr = (msg) => { errEl.textContent = msg; errEl.style.display = ''; };
+  errEl.style.display = 'none';
+
+  const label = $('cfg_sp_label').value.trim();
+  if (!label) return showErr('Label is required.');
+  const role = $('cfg_sp_role').value;
+  const mode = $('cfg_sp_mode').value;
+  const C = appConfig.config;
+
+  const put = async (url, obj) => {
+    const res = await fetch(url, { method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(obj) });
+    const body = await res.json();
+    return { ok: res.ok, body };
+  };
+  const errText = (body) => (body.errors ? body.errors.join(' · ') : (body.error || 'unknown error'));
+
+  if (mode === 'share') {
+    const targetOutput = C.physicalOutputs.find((o) => o.id === $('cfg_sp_share_output').value);
+    if (!targetOutput) return showErr('Pick an output to share with.');
+    const prevDrivers = targetOutput.sharedDrivers
+      ? targetOutput.sharedDrivers.drivers
+      : (targetOutput.speakerId ? [{ label: titleCaseFromId(targetOutput.speakerId), speakerId: targetOutput.speakerId }] : []);
+    const drivers = [...prevDrivers, { label, speakerId: speaker.id }];
+    const nextOutput = { ...targetOutput, sharedDrivers: { count: drivers.length, drivers } };
+    delete nextOutput.speakerId;
+
+    const res = await put(`/api/outputs/${encodeURIComponent(targetOutput.id)}`, nextOutput);
+    if (!res.ok) return showErr(`Failed to add as a shared driver: ${errText(res.body)}`);
+    showToast(`"${label}" now shares "${targetOutput.label}" with ${prevDrivers.map((d) => d.label).join(', ')} — tap it again to test isolation.`, 'ok');
+    closeRoomGearPanel();
+    return;
+  }
+
+  const wtype = $('cfg_sp_wtype').value;
+  const wnum = Number($('cfg_sp_wnum').value);
+  const collidingBus = C.buses.find((b) => b.wing?.type === wtype && b.wing?.num === wnum);
+  if (collidingBus) {
+    return showErr(`Routing ${wtype} ${wnum} is already used by "${collidingBus.label}". Switch "Routing" to "Shares with an existing speaker" instead, or pick a different number.`);
+  }
+
+  const lo = Number($('cfg_sp_lo').value);
+  const hi = Number($('cfg_sp_hi').value);
+  const trim = Number($('cfg_sp_trim').value);
+  const base = slugify(label);
+  const busId = uniqueId(base, new Set(C.buses.map((b) => b.id)));
+  const outputId = uniqueId(`${base}_out`, new Set(C.physicalOutputs.map((o) => o.id)));
+
+  const bus = {
+    id: busId, label, role, stereo: false,
+    wing: { type: wtype, num: wnum, confirmed: false },
+    band: [lo, hi], sweepTrimDb: trim
+  };
+  const output = {
+    id: outputId, label, sourceBusId: busId, side: 'mono', speakerId: speaker.id,
+    enabled: true, wing: { grp: null, num: null, confirmed: false }
+  };
+
+  const busRes = await put(`/api/buses/${encodeURIComponent(busId)}`, bus);
+  if (!busRes.ok) return showErr(`Bus create failed: ${errText(busRes.body)}`);
+  const outRes = await put(`/api/outputs/${encodeURIComponent(outputId)}`, output);
+  if (!outRes.ok) return showErr(`Bus "${busId}" saved, but output create failed: ${errText(outRes.body)} — finish wiring the physical output by hand.`);
+
+  showToast(`Configured "${label}"`, 'ok');
+  closeRoomGearPanel();
+}
+
 /** Speaker gear panel: really editing a {physicalOutput, bus} pair resolved
  *  via findOutputForSpeaker() then buses.find(sourceBusId). */
 function renderSpeakerGearPanel(panel){
@@ -1842,14 +2011,7 @@ function renderSpeakerGearPanel(panel){
     return;
   }
   const output = findOutputForSpeaker(speakerId, C.physicalOutputs);
-  if (!output) {
-    panel.innerHTML = `<div class="card" style="margin-top:10px">
-      <h3 style="margin:0 0 8px">Speaker: ${esc(speakerId)}</h3>
-      <p class="hint warn">No physical output references this speaker yet — nothing to configure here.</p>
-      <div class="cardfoot"><button class="small secondary" id="gearClose">Close</button></div></div>`;
-    $('gearClose').onclick = closeRoomGearPanel;
-    return;
-  }
+  if (!output) { renderOrphanSpeakerConfig(panel, speaker); return; }
   const bus = C.buses.find((b) => b.id === output.sourceBusId);
   if (!bus) {
     panel.innerHTML = `<div class="card" style="margin-top:10px">
@@ -1911,6 +2073,10 @@ function renderSpeakerGearPanel(panel){
       </div>
       <p class="hint" style="margin-bottom:4px">Sources — every driver speaker for this output (this speaker is always included; add more for a shared/side-fill pair).</p>
       <div>${sourceOptions}</div>
+      ${output.sharedDrivers?.count > 1 ? `<div class="cardfoot" style="justify-content:flex-start; margin-top:10px">
+        <button class="small secondary" id="gearTestIsolation" style="width:auto">Test driver isolation now</button>
+      </div>
+      <p class="hint" style="margin:6px 0 0">Runs the same guided wizard a Full Tune would (unplug/confirm each driver, sweep separately, then together) right now, no room walk needed — checks polarity/level/response between ${esc(output.sharedDrivers.drivers.map((d) => d.label).join(' and '))}.</p>` : ''}
       <p id="gearSpError" class="hint warn" style="display:none"></p>
       <div class="cardfoot">
         <button class="small secondary" id="gearSpDelete">Delete</button>
@@ -1925,6 +2091,12 @@ function renderSpeakerGearPanel(panel){
   $('gearClose').onclick = closeRoomGearPanel;
   $('gearSpSave').onclick = () => saveSpeakerGearPanel(output, bus);
   $('gearSpDelete').onclick = () => deleteSpeakerGearPanel(output, bus);
+  if (output.sharedDrivers?.count > 1) {
+    $('gearTestIsolation').onclick = () => {
+      closeRoomGearPanel();
+      send({ action: 'test_shared_driver', physicalOutputId: output.id });
+    };
+  }
 }
 
 /** Save: build the full next bus and full next output (spread + override,

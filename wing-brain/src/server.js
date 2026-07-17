@@ -435,6 +435,9 @@ wss.on('connection', (ws) => {
         // Shared-driver measurement wizard (routing model section 3).
         case 'wizard_continue': await session.wizardContinue(); break;
         case 'wizard_confirm':  await session.wizardConfirm(!!msg.heard); break;
+        // Standalone driver-isolation test -- same wizard, entered directly
+        // instead of nested inside a Full Tune's per-position loop.
+        case 'test_shared_driver': await session.testSharedDriverIsolation(msg.physicalOutputId); break;
         // "Restore All Patches" escape hatch — works regardless of session state.
         case 'restore_patches': session.restoreAllPatches(); break;
       }

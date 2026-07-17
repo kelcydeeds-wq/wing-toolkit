@@ -133,6 +133,7 @@ export function validateConfig(config, room) {
   // --- Layer 1: buses. Live modules (mutes, loudness, EQ, delay) operate
   // ONLY on this layer -- see docs/DECISIONS.md "routing model" entry.
   const busIds = new Set();
+  const busRouting = new Map(); // "type:num" -> first bus id that claimed it
   if (!Array.isArray(config.buses) || config.buses.length === 0) {
     bad('buses: must be a non-empty array');
   } else {
@@ -146,6 +147,21 @@ export function validateConfig(config, room) {
       if (typeof b?.stereo !== 'boolean') bad(`${at}.stereo: must be a boolean`);
       if (!['main', 'mtx'].includes(b?.wing?.type)) bad(`${at}.wing.type: must be "main" or "mtx"`);
       if (!isInt(b?.wing?.num) || b.wing.num < 1 || b.wing.num > 64) bad(`${at}.wing.num: must be an integer 1-64`);
+      else {
+        // Two buses can't independently own the same physical console
+        // routing address -- the console would just reflect whichever was
+        // written last, silently. A speaker driven off the SAME channel as
+        // an existing one (passive split) belongs on that bus's
+        // physicalOutput as an additional sharedDrivers entry, not as a
+        // second bus -- see the Room Map "Configure" flow's share option.
+        const key = `${b.wing.type}:${b.wing.num}`;
+        const claimedBy = busRouting.get(key);
+        if (claimedBy && claimedBy !== b.id) {
+          bad(`${at}.wing: ${b.wing.type} ${b.wing.num} is already used by bus "${claimedBy}" -- two buses cannot share one routing address (a shared speaker belongs on a physicalOutput's sharedDrivers instead)`);
+        } else if (!claimedBy) {
+          busRouting.set(key, b.id);
+        }
+      }
       if (typeof b?.wing?.confirmed !== 'boolean') bad(`${at}.wing.confirmed: must be a boolean`);
       const band = b?.band;
       if (!Array.isArray(band) || band.length !== 2 || !isNum(band[0]) || !isNum(band[1])
