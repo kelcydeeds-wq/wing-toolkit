@@ -436,9 +436,21 @@ ws.onmessage = (e) => {
   if (event === 'loudness') { loudness = payload; renderLoudnessMeter(); }
   if (event === 'loudnessRead') renderLoudnessNote(payload);
   if (event === 'loudnessHistory') { loudnessHistory = payload; renderLoudnessHistory(); }
-  if (event === 'warning') setStatus(payload.message, 'warn');
-  if (event === 'error') setStatus(payload.message, 'warn');
-  if (event === 'info') setStatus(payload.message, 'ok');
+  // setStatus() writes into #status, an element that only exists inside
+  // #sessionView -- fine for the frequent play-by-play during an active
+  // sweep (that inline text is genuinely nicer there, no need to toast on
+  // top of it), but INVISIBLE for anything that fires while some other
+  // view is showing -- Home, the tune-mode picker, Settings, wherever.
+  // Verify Summation is exactly this case: it never navigates to a new
+  // view at all, it just returns to idle with a pass/fail message, so
+  // without this its result -- success OR failure -- was completely
+  // silent whenever triggered from Home. Toast only when #sessionView
+  // (and so #status) isn't actually visible, so this doesn't add
+  // toast-spam on top of the inline text during a normal Full Tune walk.
+  const statusHidden = $('sessionView').classList.contains('hidden');
+  if (event === 'warning') { setStatus(payload.message, 'warn'); if (statusHidden) showToast(payload.message, 'warn'); }
+  if (event === 'error') { setStatus(payload.message, 'warn'); if (statusHidden) showToast(payload.message, 'warn'); }
+  if (event === 'info') { setStatus(payload.message, 'ok'); if (statusHidden) showToast(payload.message, 'ok'); }
 };
 
 /** Compact bar+number meter, glanceable mid-service — not a graph. Visible
