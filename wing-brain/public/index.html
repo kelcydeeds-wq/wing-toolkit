@@ -32,6 +32,15 @@
   html,body{margin:0; background:var(--bg); color:var(--ink);
     font:16px/1.45 var(--font); font-variant-numeric:tabular-nums;}
   #app{max-width:560px; margin:0 auto; padding:16px 16px 120px}
+  /* Room Map tab: breaks out of the phone-first 560px column to actually use
+     a wide/desktop screen, and locks the page to one viewport-height flex
+     column (no page scroll) so the map itself gets all the leftover space
+     instead of being just another card in a long scroll. */
+  body.roomtab-mode{height:100vh; height:100dvh; overflow:hidden}
+  body.roomtab-mode #app{max-width:1400px; height:100%; padding-bottom:16px;
+    display:flex; flex-direction:column}
+  body.roomtab-mode header{flex:0 0 auto}
+  body.roomtab-mode #settingsView{flex:1; min-height:0; display:flex; flex-direction:column}
 
   header{display:flex; align-items:center; justify-content:space-between; margin:4px 0 18px}
   header h1{font-size:17px; letter-spacing:.09em; text-transform:uppercase; margin:0; font-weight:600}
@@ -57,9 +66,15 @@
   .row{display:flex; gap:10px}
   .row>button{flex:1}
 
-  #roomMap,#roomMap2,#roomMapEdit{width:100%; border-radius:10px; background:var(--panel2); display:block;
+  #roomMap,#roomMap2{width:100%; border-radius:10px; background:var(--panel2); display:block;
     box-shadow:inset 0 1px 0 rgba(255,255,255,.03), inset 0 0 0 1px rgba(0,0,0,.4), inset 0 18px 34px -26px rgba(0,0,0,.8);}
-  #roomMapEdit{touch-action:none; cursor:grab}
+  /* #roomMapEdit (the Room Map tab) sizes itself via JS to exactly fill its
+     flex:1 .mapwrap parent -- width/height:100% here just mirrors whatever
+     pixel dimensions sizeRoomMapEdit() sets as attributes, it's not doing
+     the CSS-only aspect-ratio-preserving stretch #roomMap/#roomMap2 use. */
+  #roomMapEdit{width:100%; height:100%; border-radius:10px; background:var(--panel2); display:block;
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.03), inset 0 0 0 1px rgba(0,0,0,.4), inset 0 18px 34px -26px rgba(0,0,0,.8);
+    touch-action:none; cursor:grab}
   #roomMapEdit.dragging{cursor:grabbing}
   .mapwrap{position:relative}
   /* CSS-driven pulse (not a canvas rAF loop) for the "you are here" marker
@@ -137,8 +152,7 @@
   .grid2{display:grid; grid-template-columns:1fr 1fr; gap:4px 16px}
 
   /* --- interactive room map: toolbar + floating panels --- */
-  .maptoolbar{display:flex; align-items:center; justify-content:space-between; gap:10px; margin-top:10px}
-  .maptoolbar .maphint{font-size:12px; color:var(--dim)}
+  .maphint{font-size:12px; color:var(--dim)}
   #btnRoomAddToggle{width:auto; flex:0 0 auto; padding:8px 16px 8px 13px; border-radius:999px;
     display:inline-flex; align-items:center; gap:6px; transition:background .15s,color .15s,transform .1s}
   #btnRoomAddToggle:active{transform:scale(.96)}
@@ -156,6 +170,30 @@
   .swatch{display:inline-block; width:9px; height:9px; border-radius:2px; margin-right:6px; vertical-align:1px}
   @keyframes placepulse{0%,100%{opacity:1; transform:scale(1)} 50%{opacity:.4; transform:scale(.8)}}
   .placepulse{display:inline-block; color:var(--amber); animation:placepulse 1.1s ease-in-out infinite}
+
+  /* --- Settings tab bar (General / Room Map) --- */
+  .settingstabs{display:flex; gap:8px; margin-bottom:14px; flex:0 0 auto}
+  .settingstabs button{width:auto; flex:0 0 auto; padding:9px 20px; border-radius:999px; font-size:13px}
+
+  /* --- Room Map tab: full-page layout, mobile bottom-sheet / desktop
+     side-panel for the add/gear editor panels --- */
+  .roomtab{flex:1; min-height:0; display:flex; flex-direction:column; position:relative}
+  .roomtab-toolbar{display:flex; align-items:center; justify-content:space-between; gap:10px;
+    flex:0 0 auto; padding-bottom:10px}
+  .roomtab .mapwrap{flex:1; min-height:220px}
+  .roomtab-footer{flex:0 0 auto; padding-top:10px}
+  /* Overlay panels anchor to .mapwrap itself (already position:relative),
+     not a guessed toolbar-height offset -- robust to the toolbar/footer's
+     actual rendered size instead of a fragile pixel constant. Mobile:
+     bottom-sheet, full width. Desktop: top-right side panel, fixed width. */
+  .roomtab .mapwrap #roomAddPanel,.roomtab .mapwrap #roomGearPanel{
+    position:absolute; left:10px; right:10px; bottom:10px; pointer-events:none}
+  .roomtab .mapwrap #roomAddPanel:not(:empty),.roomtab .mapwrap #roomGearPanel:not(:empty){
+    pointer-events:auto; max-height:calc(100% - 20px); overflow:auto}
+  @media (min-width:760px){
+    .roomtab .mapwrap #roomAddPanel,.roomtab .mapwrap #roomGearPanel{
+      left:auto; right:14px; top:14px; bottom:14px; width:340px}
+  }
 
   /* --- loudness meter: glanceable, not a graph --- */
   #loudnessMeter{border-radius:10px; padding:8px 12px; margin:-6px 0 14px;
@@ -297,6 +335,7 @@ let room = null, session = null, lastTrace = null, history = [];
 let summationCheck = null; // last {pass, dipFreqHz, dipDepthDb, subTrace, mainsTrace, combinedTrace, at} from a 'summationCheck' event
 let appConfig = null;      // { config, room } — the server's live runtime config
 let settingsOpen = false;
+let settingsTab = 'general'; // 'general' | 'room' -- which Settings tab is showing
 let wingStatus = { state: 'untested', detail: '' }; // untested | connected | unreachable
 let loudness = null;       // last { levelDb, status, targetDb, ... } from the loudness monitor
 let loudnessHistory = [];
@@ -456,6 +495,10 @@ function render(){
   // 409 anyway — the server refuses config writes during a session).
   const sessionBusy = session && !['idle', 'done'].includes(session.state);
   if (sessionBusy) settingsOpen = false;
+  // Single source of truth for the Room Map tab's full-viewport body mode --
+  // covers every path that can flip settingsOpen (gearBtn, sessionBusy
+  // force-close, tab switches), not just the gearBtn click handler.
+  document.body.classList.toggle('roomtab-mode', settingsOpen && settingsTab === 'room');
   $('gearBtn').textContent = settingsOpen ? '✕' : '⚙';
   $('gearBtn').classList.toggle('hidden', !!sessionBusy);
   if (settingsOpen) {
@@ -1251,6 +1294,69 @@ function wireRoomEditor(cv){
   cv.addEventListener('pointercancel', endDrag);
 }
 
+/** Sizes #roomMapEdit's actual pixel buffer to exactly fill its .mapwrap
+ *  flex parent (the Room Map tab is a full-viewport flex layout, not the
+ *  old fixed 560x380 canvas that Home/session maps still use) and redraws.
+ *  A no-op re-draw when the size hasn't actually changed, so this is cheap
+ *  to call opportunistically (tab open, window resize). */
+function sizeRoomMapEdit(){
+  const cv = $('roomMapEdit');
+  const wrap = cv?.parentElement;
+  if (!cv || !wrap) return;
+  const w = Math.max(200, Math.floor(wrap.clientWidth));
+  const h = Math.max(200, Math.floor(wrap.clientHeight));
+  if (cv.width !== w || cv.height !== h) { cv.width = w; cv.height = h; }
+  drawRoomInteractive(cv);
+}
+
+let _roomResizeTimer = null;
+window.addEventListener('resize', () => {
+  if (!(settingsOpen && settingsTab === 'room')) return;
+  clearTimeout(_roomResizeTimer);
+  _roomResizeTimer = setTimeout(sizeRoomMapEdit, 100);
+});
+
+/** Full-page Room Map tab markup: toolbar, a flex:1 map that gets ALL the
+ *  leftover vertical space, add/gear panels floating over it instead of
+ *  pushing it around, verify-position + stats tucked into a slim footer.
+ *  Replaces the old scrolling "Room" card entirely -- see docs/DECISIONS.md. */
+function roomTabHtml(R){
+  return `<div class="roomtab">
+    <div class="roomtab-toolbar">
+      <span class="maphint"><span class="swatch" style="background:#ff6b5e"></span>main/sub&nbsp;&nbsp;<span class="swatch" style="background:#6ab7ff"></span>fill&nbsp;&nbsp;<span class="swatch" style="background:#3a4048"></span>position</span>
+      <button class="small secondary" id="btnRoomAddToggle"><span class="plus">+</span> Add</button>
+    </div>
+    <div class="mapwrap"><canvas id="roomMapEdit"></canvas><div id="roomAddPanel"></div><div id="roomGearPanel"></div></div>
+    <div class="roomtab-footer">
+      <p class="hint" style="margin:0 0 8px">Drag a speaker or measurement position to reposition it — saves on release. Tap the small toggle next to an icon to enable/disable it (dimmed = disabled). Tap the gear icon to edit its full settings (routing, band, role, delete, etc).</p>
+      <div class="frow"><label>Verify position</label><select id="set_verify_pos">${R.positions.map((p) =>
+        `<option value="${esc(p.id)}" ${p.id === R.verifyPosition ? 'selected' : ''}>${esc(p.label)}</option>`).join('')}</select></div>
+      <div class="cardfoot" style="justify-content:space-between">
+        <span class="hint" style="margin:0;flex:1">${esc(R.name)} · ${R.width} m wide · ${R.positions.length} positions · ${(R.speakers || []).length} speakers</span>
+        <button class="small" id="save_room" disabled style="width:auto">Save</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+/** Wires everything roomTabHtml() just rendered. Mirrors the old general-tab
+ *  wiring (set_verify_pos/save_room, wireRoomEditor, add-toggle button,
+ *  renderRoomAddPanel/renderRoomGearPanel) -- unchanged logic, just called
+ *  from the Room Map tab's own branch instead of unconditionally. */
+function wireRoomTab(){
+  $('set_verify_pos').addEventListener('change', () => markDirty('room'));
+  $('save_room').onclick = () => saveConfig('room', { room: { verifyPosition: $('set_verify_pos').value } });
+
+  sizeRoomMapEdit();
+  wireRoomEditor($('roomMapEdit'));
+
+  const btn = $('btnRoomAddToggle');
+  btn.onclick = () => setRoomAddMode(roomAddMode ? null : { kind: null });
+  btn.className = `small ${roomAddMode ? 'amber' : 'secondary'}`;
+  renderRoomAddPanel();
+  renderRoomGearPanel();
+}
+
 /* ---------- interactive room editor: add mode (Stage 3) ---------- */
 // "+ Add" enters add mode: pick speaker/position, tap the map to place it,
 // then fill a small inline form (not a chain of native prompts) before
@@ -1301,6 +1407,10 @@ function nextWingNum(buses, type) {
 
 function setRoomAddMode(next) {
   roomAddMode = next;
+  // The add-form and the gear-settings panel now overlay the SAME map area
+  // (Room Map tab) rather than just stacking in a scrolling card -- only one
+  // makes sense open at a time, so opening one closes the other.
+  if (next && roomGearPanel) { roomGearPanel = null; renderRoomGearPanel(); }
   const btn = $('btnRoomAddToggle');
   if (btn) btn.className = `small ${roomAddMode ? 'amber' : 'secondary'}`;
   renderRoomAddPanel();
@@ -1483,6 +1593,7 @@ function titleCaseFromId(id) {
  *  Swaps contents in place -- never stacks a second panel. */
 function openRoomGearPanel(kind, id) {
   roomGearPanel = { kind, id };
+  if (roomAddMode) { roomAddMode = null; renderRoomAddPanel(); } // see setRoomAddMode()'s note
   renderRoomGearPanel();
   const cv = $('roomMapEdit');
   if (cv) drawRoomInteractive(cv);
@@ -1966,6 +2077,7 @@ async function saveConfig(card, patch){
 $('gearBtn').onclick = async () => {
   settingsOpen = !settingsOpen;
   if (settingsOpen) {
+    settingsTab = 'general'; // always land on General on a fresh open -- Room Map is an explicit choice
     if (!appConfig) {
       try { appConfig = await (await fetch('/api/config')).json(); }
       catch { showToast('Could not load config', 'warn'); settingsOpen = false; render(); return; }
@@ -1990,6 +2102,26 @@ function renderSettings(){
   busesDraft = structuredClone(C.buses);
   physicalOutputsDraft = structuredClone(C.physicalOutputs);
   const el = $('settingsView');
+  document.body.classList.toggle('roomtab-mode', settingsOpen && settingsTab === 'room');
+
+  const tabBarHtml = `<div class="settingstabs">
+    <button class="${settingsTab === 'general' ? '' : 'secondary'}" id="tabGeneral">General</button>
+    <button class="${settingsTab === 'room' ? '' : 'secondary'}" id="tabRoom">Room Map</button>
+  </div>`;
+  const wireTabBar = () => {
+    $('tabGeneral').onclick = () => { settingsTab = 'general'; renderSettings(); };
+    $('tabRoom').onclick = () => { settingsTab = 'room'; renderSettings(); };
+  };
+
+  // Room Map tab: an entirely different full-page layout, not just another
+  // card -- render it and stop, none of the general tab's card wiring below
+  // applies (those elements don't exist in this branch's markup at all).
+  if (settingsTab === 'room') {
+    el.innerHTML = tabBarHtml + roomTabHtml(R);
+    wireTabBar();
+    wireRoomTab();
+    return;
+  }
 
   const frow = (label, inner) => `<div class="frow"><label>${label}</label>${inner}</div>`;
   const num = (id, value, attrs = '') => `<input type="number" id="${id}" value="${value}" ${attrs}>`;
@@ -2041,7 +2173,7 @@ function renderSettings(){
   const guardrailInput = (key) =>
     `<div class="frow"><label>${key}</label>${num(`gr_${key}`, C.guardrails[key], 'disabled step="any"')}</div>`;
 
-  el.innerHTML = `
+  el.innerHTML = tabBarHtml + `
     <div class="card">
       <h2>Mode &amp; Console</h2>
       <label class="modeopt"><input type="radio" name="set_mode" value="mock" ${C.mode === 'mock' ? 'checked' : ''}>
@@ -2150,22 +2282,6 @@ function renderSettings(){
     </div>
 
     <div class="card">
-      <h2>Room</h2>
-      <canvas id="roomMapEdit" width="560" height="380"></canvas>
-      <div class="maptoolbar">
-        <span class="maphint"><span class="swatch" style="background:#ff6b5e"></span>main/sub&nbsp;&nbsp;<span class="swatch" style="background:#6ab7ff"></span>fill&nbsp;&nbsp;<span class="swatch" style="background:#3a4048"></span>position</span>
-        <button class="small secondary" id="btnRoomAddToggle"><span class="plus">+</span> Add</button>
-      </div>
-      <div id="roomAddPanel"></div>
-      <div id="roomGearPanel"></div>
-      <p class="hint">Drag a speaker or measurement position to reposition it — saves on release. Tap the small toggle next to an icon to enable/disable it (dimmed = disabled). Tap the gear icon to edit its full settings (routing, band, role, delete, etc).</p>
-      ${frow('Verify position', `<select id="set_verify_pos">${R.positions.map((p) =>
-        `<option value="${esc(p.id)}" ${p.id === R.verifyPosition ? 'selected' : ''}>${esc(p.label)}</option>`).join('')}</select>`)}
-      <p class="hint">${esc(R.name)} · ${R.width} m wide · ${R.positions.length} positions · ${(R.speakers || []).length} speakers</p>
-      <div class="cardfoot"><button class="small" id="save_room" disabled>Save</button></div>
-    </div>
-
-    <div class="card">
       <h2>Advanced</h2>
       <p class="hint">Raw config editor — the escape hatch. Validated server-side before anything is written; saving REPLACES the whole config (deletions stick).</p>
       <textarea id="set_rawjson" rows="16" spellcheck="false"></textarea>
@@ -2197,17 +2313,7 @@ function renderSettings(){
     markDirty('tuning');
     $('curveHint').textContent = curves.find((c) => c.name === $('set_curve').value)?.comment || '';
   });
-  $('set_verify_pos').addEventListener('change', () => markDirty('room'));
-  { const roomEditCv = $('roomMapEdit'); if (roomEditCv) { wireRoomEditor(roomEditCv); drawRoomInteractive(roomEditCv); } }
-  {
-    const btn = $('btnRoomAddToggle');
-    if (btn) {
-      btn.onclick = () => setRoomAddMode(roomAddMode ? null : { kind: null });
-      btn.className = `small ${roomAddMode ? 'amber' : 'secondary'}`;
-    }
-    renderRoomAddPanel();
-  }
-  renderRoomGearPanel();
+  wireTabBar();
   $('set_rawjson').addEventListener('input', () => markDirty('raw'));
   wire('loudness', ['lm_enabled', 'lm_pos', 'lm_target', 'lm_soft', 'lm_hard', 'lm_sustained', 'lm_window', 'lm_quiet_on', 'lm_quiet']);
   $('lm_pos').addEventListener('change', () => markDirty('loudness'));
@@ -2418,9 +2524,6 @@ function renderSettings(){
       showToast('Calibrated', 'ok');
     } catch (err) { out.style.color = 'var(--red)'; out.textContent = String(err); }
   };
-
-  /* --- card 6: room --- */
-  $('save_room').onclick = () => saveConfig('room', { room: { verifyPosition: $('set_verify_pos').value } });
 
   /* --- card 7: advanced --- */
   $('btnRawReload').onclick = () => {
