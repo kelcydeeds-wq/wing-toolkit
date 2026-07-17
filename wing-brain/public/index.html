@@ -8,29 +8,42 @@
 <meta name="theme-color" content="#0c0e10">
 <style>
   /* FOH-dark: console-black surfaces, VU-amber accent, in-spec green.
-     Utility mono for data — this is a meter bridge, not a brochure. */
+     Clear Sans throughout (fonts/) -- a meter bridge, not a brochure, but
+     one with real typography instead of a raw system-mono fallback. Weight
+     ranges below let a single @font-face file answer more than one CSS
+     font-weight (e.g. Medium covers both 500 and the 600 used for labels)
+     instead of the browser synthetic-bolding a nearby weight. */
+  @font-face{font-family:'Clear Sans'; font-weight:300; font-style:normal;
+    src:url('fonts/ClearSans-Light.ttf') format('truetype')}
+  @font-face{font-family:'Clear Sans'; font-weight:400; font-style:normal;
+    src:url('fonts/ClearSans-Regular.ttf') format('truetype')}
+  @font-face{font-family:'Clear Sans'; font-weight:500 600; font-style:normal;
+    src:url('fonts/ClearSans-Medium.ttf') format('truetype')}
+  @font-face{font-family:'Clear Sans'; font-weight:700 800; font-style:normal;
+    src:url('fonts/ClearSans-Bold.ttf') format('truetype')}
+
   :root{
     --bg:#0c0e10; --panel:#15181c; --panel2:#1c2026; --line:#2a2f36;
     --ink:#e8e6e1; --dim:#8b919a;
     --amber:#ffb454; --green:#5dd39e; --red:#ff6b5e; --blue:#6ab7ff;
-    --radius:14px;
+    --radius:14px; --font:'Clear Sans', -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   }
   *{box-sizing:border-box; -webkit-tap-highlight-color:transparent}
   html,body{margin:0; background:var(--bg); color:var(--ink);
-    font:16px/1.45 ui-monospace, "SF Mono", "Cascadia Mono", Menlo, monospace;}
+    font:16px/1.45 var(--font); font-variant-numeric:tabular-nums;}
   #app{max-width:560px; margin:0 auto; padding:16px 16px 120px}
 
   header{display:flex; align-items:center; justify-content:space-between; margin:4px 0 18px}
-  header h1{font-size:17px; letter-spacing:.14em; text-transform:uppercase; margin:0; font-weight:600}
+  header h1{font-size:17px; letter-spacing:.09em; text-transform:uppercase; margin:0; font-weight:600}
   .hleft{display:flex; align-items:center; gap:10px}
   #exitBtn{width:auto; padding:5px 13px; font-size:16px; font-weight:600;
     background:var(--panel2); color:var(--ink); border:1px solid var(--line); border-radius:10px}
   #modeBadge{font-size:11px; color:var(--amber); border:1px solid var(--amber);
-    border-radius:999px; padding:2px 10px; letter-spacing:.1em}
+    border-radius:999px; padding:2px 10px; letter-spacing:.06em; font-weight:500}
 
   .card{background:var(--panel); border:1px solid var(--line); border-radius:var(--radius);
     padding:16px; margin-bottom:14px}
-  .card h2{font-size:12px; letter-spacing:.14em; text-transform:uppercase; color:var(--dim);
+  .card h2{font-size:12px; letter-spacing:.08em; text-transform:uppercase; color:var(--dim);
     margin:0 0 10px; font-weight:600}
 
   button,a.secondary{font:inherit; border:0; border-radius:var(--radius); cursor:pointer;
@@ -137,7 +150,7 @@
     box-shadow:0 10px 28px -14px rgba(0,0,0,.55), 0 0 0 1px rgba(255,255,255,.02) inset;
     animation:panelIn .18s cubic-bezier(.2,.8,.3,1) both;
   }
-  #roomAddPanel .card h3,#roomGearPanel .card h3{font-size:12px; letter-spacing:.1em; text-transform:uppercase;
+  #roomAddPanel .card h3,#roomGearPanel .card h3{font-size:12px; letter-spacing:.08em; text-transform:uppercase;
     color:var(--dim); font-weight:600; display:flex; align-items:center; justify-content:space-between}
   #roomAddPanel > .frow{animation:panelIn .18s cubic-bezier(.2,.8,.3,1) both}
   .swatch{display:inline-block; width:9px; height:9px; border-radius:2px; margin-right:6px; vertical-align:1px}
@@ -287,6 +300,17 @@ let settingsOpen = false;
 let wingStatus = { state: 'untested', detail: '' }; // untested | connected | unreachable
 let loudness = null;       // last { levelDb, status, targetDb, ... } from the loudness monitor
 let loudnessHistory = [];
+
+// Canvas text does NOT wait for webfonts the way DOM text reflows
+// automatically -- on a cold load a map drawn before Clear Sans finishes
+// loading silently keeps the sans-serif fallback forever, since nothing
+// re-triggers a redraw once the font arrives. This is normally sub-frame
+// on localhost, but it's a real race, not a hypothetical one -- so redraw
+// whatever's already on screen once the font is actually ready.
+document.fonts?.ready?.then(() => {
+  if (room) { drawRoom($('roomMap')); if (settingsOpen && $('roomMapEdit')) drawRoomInteractive($('roomMapEdit')); }
+  if (lastTrace) drawTrace($('liveTrace'), [seriesFrom(lastTrace)]);
+});
 
 ws.onmessage = (e) => {
   const { event, payload } = JSON.parse(e.data);
@@ -742,7 +766,7 @@ function roundRectPath(ctx, x, y, w, h, r){
  *  fight the background, a small detail that reads as "finished" rather
  *  than "text floating on a canvas". */
 function drawLabelPill(ctx, text, x, y, opts = {}){
-  const { color = 'rgba(232,230,225,.75)', bg = 'rgba(12,14,16,.68)', font = '11px ui-monospace', align = 'left' } = opts;
+  const { color = 'rgba(232,230,225,.75)', bg = 'rgba(12,14,16,.68)', font = '11px "Clear Sans", sans-serif', align = 'left' } = opts;
   ctx.font = font;
   const tw = ctx.measureText(text).width;
   const px = align === 'center' ? x - tw/2 : x;
@@ -821,7 +845,7 @@ function drawRoomGrid(ctx, cv, proj){
   ctx.beginPath(); ctx.moveTo(bx, by); ctx.lineTo(bx + barM*s, by); ctx.stroke();
   ctx.beginPath(); ctx.moveTo(bx, by-3); ctx.lineTo(bx, by+3); ctx.stroke();
   ctx.beginPath(); ctx.moveTo(bx+barM*s, by-3); ctx.lineTo(bx+barM*s, by+3); ctx.stroke();
-  ctx.fillStyle = 'rgba(255,255,255,.42)'; ctx.font = '9px ui-monospace';
+  ctx.fillStyle = 'rgba(255,255,255,.42)'; ctx.font = '9px "Clear Sans", sans-serif';
   ctx.fillText(`${barM} m`, bx, by-6);
 }
 
@@ -840,13 +864,13 @@ function drawRoomStatic(ctx, cv, rm, proj){
   ctx.strokeStyle = '#3a4048'; ctx.lineWidth = 2; ctx.stroke();
 
   drawRoomGrid(ctx, cv, proj);
-  ctx.font = '11px ui-monospace';
+  ctx.font = '11px "Clear Sans", sans-serif';
 
   if (rm.stage) {
     const g = rm.stage;
     ctx.fillStyle = '#22262d';
     ctx.fillRect(X(g.x), Y(g.y), g.w*s, g.h*s);
-    drawLabelPill(ctx, 'STAGE', X(g.x)+8, Y(g.y)+15, { color:'rgba(139,145,154,.9)', font:'bold 10px ui-monospace' });
+    drawLabelPill(ctx, 'STAGE', X(g.x)+8, Y(g.y)+15, { color:'rgba(139,145,154,.9)', font:'bold 10px "Clear Sans", sans-serif' });
   }
   if (rm.balcony) {
     const b = rm.balcony;
@@ -855,13 +879,13 @@ function drawRoomStatic(ctx, cv, rm, proj){
     ctx.strokeStyle = 'rgba(255,180,84,0.45)'; ctx.setLineDash([6,4]);
     ctx.strokeRect(X(b.x), Y(b.y), b.w*s, b.h*s);
     ctx.setLineDash([]);
-    drawLabelPill(ctx, 'BALCONY (above)', X(b.x)+6, Y(b.y)+13, { color:'rgba(255,180,84,.85)', font:'bold 10px ui-monospace' });
+    drawLabelPill(ctx, 'BALCONY (above)', X(b.x)+6, Y(b.y)+13, { color:'rgba(255,180,84,.85)', font:'bold 10px "Clear Sans", sans-serif' });
   }
   if (rm.booth) {
     const b = rm.booth;
     ctx.strokeStyle = '#3a4048';
     ctx.strokeRect(X(b.x), Y(b.y), b.w*s, b.h*s);
-    drawLabelPill(ctx, 'FOH', X(b.x)+4, Y(b.y)-5, { color:'rgba(139,145,154,.9)', font:'bold 10px ui-monospace' });
+    drawLabelPill(ctx, 'FOH', X(b.x)+4, Y(b.y)-5, { color:'rgba(139,145,154,.9)', font:'bold 10px "Clear Sans", sans-serif' });
   }
 }
 
@@ -1046,9 +1070,9 @@ function drawRoomInteractive(cv){
       ctx.beginPath(); ctx.arc(x, y+7, 6.5, 0, Math.PI*2); ctx.fill();
       ctx.restore();
       ctx.fillStyle = '#0c0e10';
-      ctx.font = 'bold 9px ui-monospace';
+      ctx.font = 'bold 9px "Clear Sans", sans-serif';
       ctx.fillText('!', x-1.5, y+10);
-      drawLabelPill(ctx, 'needs positioning', x+21, y+22, { color:'rgba(255,180,84,.95)', font:'bold 10px ui-monospace' });
+      drawLabelPill(ctx, 'needs positioning', x+21, y+22, { color:'rgba(255,180,84,.95)', font:'bold 10px "Clear Sans", sans-serif' });
     }
   }
 
@@ -1061,7 +1085,7 @@ function drawRoomInteractive(cv){
 
     ctx.globalAlpha = enabled ? 1 : 0.35;
     drawPositionGlyph(ctx, x, y, color, dragging ? 11 : 8);
-    ctx.font = '11px ui-monospace';
+    ctx.font = '11px "Clear Sans", sans-serif';
     const tw = ctx.measureText(p.label).width;
     drawLabelPill(ctx, p.label, x+16+tw > cv.width-6 ? x-16-tw : x+16, y+3, { color:'rgba(232,230,225,.7)' });
     ctx.globalAlpha = 1;
@@ -1811,7 +1835,7 @@ function drawTrace(cv, series){
   const ctx = cv.getContext('2d');
   const W = cv.width, H = cv.height, pad = 26;
   ctx.clearRect(0,0,W,H);
-  ctx.font = '10px ui-monospace'; ctx.fillStyle = '#5a616b'; ctx.strokeStyle = '#232830';
+  ctx.font = '10px "Clear Sans", sans-serif'; ctx.fillStyle = '#5a616b'; ctx.strokeStyle = '#232830';
 
   const fLo = Math.log10(20), fHi = Math.log10(20000);
   const dLo = -18, dHi = 12;
