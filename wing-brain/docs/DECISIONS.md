@@ -3,6 +3,426 @@
 Running log of judgment calls made during autonomous work runs, so they can be
 reviewed and reversed if wrong.
 
+## 2026-08-14 — Recurring Wing OSC disconnects during a time-boxed session; ASIO channel number ≠ MOD slot number by default; REAPER project loss
+
+Three separate, unrelated findings from one session, logged together since
+they all happened during the same time-boxed certification attempt.
+
+**Wing connectivity dropped and recovered FOUR times** during a single
+~90-minute session (full ping loss, not just OSC — the fault is below the
+application layer). Never diagnosed to a root cause; the user's own
+working theory is a specific network switch, and they restarted it near
+the end of the session, after which the connection held. **Not
+confirmed as fixed** — next session should note whether it recurs before
+trusting the switch theory. Logged in `CHECKLIST.md` deliberately, even
+though it was never root-caused, because a flaky OSC link is exactly the
+kind of thing that must be caught before a live tune day, not discovered
+during one.
+
+**Assumed a default 1:1 ASIO-channel-to-MOD-slot mapping and was wrong.**
+Built the whole measurement-audio-injection path (`/aux/1/in/conn` →
+`MOD/1`) on the assumption that wing-brain's ASIO output channel 1 lands
+on Wing MOD slot 1 by default — reasonable given every *other* MOD
+mapping built in this project (the 19-channel routing) does follow
+channel-number = slot-number. But the user has separately configured
+SoundGrid's own routing (inside the SoundGrid application, invisible from
+the Wing/OSC side entirely) to send that specific PC output to MOD 63/64
+instead. Corrected once the user mentioned it in passing. **General
+lesson**: the SoundGrid software has its own independent routing layer
+between "ASIO channel" and "network/MOD slot" — never assume the default
+1:1 mapping holds without confirming from the SoundGrid side specifically,
+even in a project where that mapping has held every other time so far.
+
+**REAPER's project was never saved across two sessions and was lost.**
+All 19 routing tracks + VERN's FX chain, built 2026-08-12, were gone by
+2026-08-14 — the project reported 0 tracks, unsaved, no file. Rebuilt
+everything from the existing scripts (idempotent, no data loss in the
+*scripts* themselves, just in the REAPER project state they'd built).
+Added `scripts/save-project.lua` and ran it this time specifically to
+avoid a third rebuild — worth normalizing "save the REAPER project" as an
+explicit last step of any session that touches it, the same way `git
+commit` is for the codebase. `Main_SaveProjectEx` wrote real content to
+disk (confirmed by file size) but the running instance's own
+`EnumProjects()` still reported no associated path afterward — didn't dig
+into why under time pressure; flagged for next session to just open the
+saved file directly rather than trust the running instance remembers it.
+
+## 2026-08-12 (evening) — Vocals switched from ALT-source round-trip to Wing-native external-FX insert, mid-build
+
+Built a full SoundGrid send/return pipe (see `CHECKLIST.md`'s "LIVE
+ROUTING" results entry) using each channel's ALT input source pointed at a
+MOD-group slot, with REAPER doing the processing. This works, and was
+verified end-to-end for channel 3 (VERN) — audio round-tripped through
+REAPER and back into the Wing correctly, once a SuperRack SoundGrid
+output-routing setting (separate from input, which needed no such step)
+was fixed.
+
+**Then the user changed the plan partway through**, for a good reason:
+swapping a channel's *entire* input source (what ALT-swap does) means
+there's no separate dry tap left on that channel — any monitor/IEM send
+built from it necessarily carries whatever the ALT path is doing,
+processed or not. For instruments that's fine. For vocals it isn't: the
+singers' in-ear mixes need to stay dry (no pitch-correction/compression
+artifacts in their own ears) while FOH gets the processed signal. The
+Wing's own external-FX-insert mechanism (a channel-strip "FX Processor"
+slot set to `FX TYPE: EXTERNAL`) solves this properly, since it inserts
+the external send/return into the channel's DSP chain at a controllable
+point instead of replacing the channel's source entirely.
+
+**Kept, not thrown away**: the MOD-slot-per-channel send/return pipe. The
+external-FX-insert mechanism's own SEND/RETURN fields, confirmed by
+reading channel 3's touchscreen, point at the exact same `MOD 3` slot
+already built for the ALT-swap approach. So the pivot only changed *which*
+Wing mechanism uses the routing, not the routing itself — worth
+remembering if a similar "wrong tool consuming the right plumbing"
+situation comes up again: check whether the lower-level work is still
+valid before rebuilding it.
+
+**Also switched software tier**: REAPER → SuperRack Performer for the
+actual vocal processing (the B0 bench-test decision from `CHECKLIST.md`
+was never formally closed out — this is the user informally deciding it
+live, for vocals at least; instruments' processing engine is still
+unstated). REAPER's tracks/routing built earlier tonight
+(`scripts/build-live-routing.lua`) are left in place and still functionally
+correct for instruments; nothing about them was undone.
+
+## 2026-08-12 — Ran a ReaScript against a live REAPER instance without touching its GUI
+
+The user couldn't find REAPER's Action List (menu not visible in the
+current skin/layout) to load `build-live-routing.lua` by hand. Rather than
+troubleshoot REAPER's menu/skin, confirmed via web search that
+`reaper.exe -nonewinst <script.lua>` forwards a script to an
+already-running instance instead of opening a new one, then verified this
+directly (checked the REAPER process list before and after — same PID,
+same start time, no second instance spawned) before trusting it against
+the live session. Ran cleanly. Worth reusing this pattern for any future
+one-shot ReaScript task in this project instead of walking a user through
+GUI navigation they're struggling to find, but the "verify no second
+instance" check is worth keeping every time — the flag would be easy to
+mistype or the behavior easy to misremember, and a stray second REAPER
+instance mid-live-session would be a real problem.
+
+## 2026-08-12 — Wing dynamics/gate/EQ sections have per-channel selectable "models" that gate which sub-parameters exist
+
+Discovered while executing the full channel renumber (see `CHECKLIST.md`'s
+"CHANNEL REMAP" results entry). `dyn/mdl`, `gate/mdl`, and `eq/mdl` each
+select between multiple processing topologies on a *per-channel* basis
+(confirmed values seen: dyn "COMP"/"LA"/"NSTR", gate "GATE"/"LA", eq
+"STD"/"SOUL") — the model isn't fixed by channel type, and different
+channels on the same console can have different models selected. Writing a
+model-dependent sub-parameter (e.g. `dyn/thr`) to a channel whose model
+doesn't currently support it is a **silent no-op**: the write goes out, no
+error comes back, and a readback simply returns the old/default value
+forever. This cost several rounds of "verify failed, expected X got null/
+default" during the remap before the pattern was recognized.
+
+Fix, now permanent in `wing-schema.mjs`: each model-gated section reads/
+writes its own `mdl` field *first* (object key order is preserved through
+`leafAddresses()`'s walk, so this is enough to guarantee write order without
+extra plumbing in `apply-remap.mjs`). Confirmed empirically that switching
+`mdl` to match the source's model immediately makes the previously-null
+sub-parameters writable and readable again.
+
+**A second-order gotcha found the same way**: `dyn/ratio` isn't just gated
+by model, its *value representation* changes with it — a plain number under
+"COMP" but a stepped string enum (`"6:1"`) under "NSTR". `isContinuousParam`
+is address-pattern-based and had no way to know this ahead of time, so it
+was sending a string through `sendFloat()`, which silently failed. Fixed
+generically in `apply-remap.mjs`'s write loop by additionally checking
+`typeof value === 'number'` before choosing `sendFloat` over `send` — this
+should absorb any further model-dependent representation quirks without
+needing another one-off address-pattern fix.
+
+**Also found while adding `gate/mdl`**: the gate section had never been
+fully captured by any past remap in this project's history — the schema
+only ever had `gate/on` + `gate/thr`, missing `range`/`att`/`hld`/`rel`/
+`acc`/`ratio` entirely. Not a new bug from tonight's work, just never
+noticed before because no one had verified a full gate-settings round-trip
+until now. Fixed alongside the model-gating fix since both needed to touch
+the same schema block.
+
+## 2026-08-12 — Correct algorithm for multi-way channel-swap permutations: topological order, not naive cycle tracing
+
+Renumbering 18 channels at once (see `CHECKLIST.md` results) isn't a set of
+independent pairwise swaps — it's a real permutation with both pure cycles
+(e.g. FLOOR↔PADS PIANO) and chains where a channel is simultaneously a
+*target* (receives another channel's data) and a *source* (another target's
+move needs to read it first). A first draft of the move-planning script
+traced each starting channel's chain independently and stopped as soon as it
+hit an already-visited node, mislabeling shared nodes as "already resolved"
+— which would have let a later move overwrite a channel before an earlier
+move had read the data it needed from it (concretely: channel 3 both
+receives VERN's data and is SNARE TOP's source; the naive script would have
+fired the VERN write first, destroying SNARE TOP's settings before they were
+copied out).
+
+Correct approach, implemented and verified by hand before running against
+the real console: repeatedly scan for any pending move whose source channel
+nothing *else* still needs to read from, fire it, remove it from
+consideration, and repeat until no more progress is possible. Whatever
+remains at that point is one or more genuine cycles, each broken with a
+single scratch channel (read cycle-start into scratch, shift everything else
+down one, write scratch into the last slot). This is a standard topological-
+order-with-cycle-breaking approach; worth remembering as the correct pattern
+for any future multi-channel remap, rather than re-deriving it under time
+pressure against live gear.
+
+## 2026-08-12 — Wing IP changed mid-session: church installed a new UniFi network
+
+Confirmed `192.168.25.80` live earlier this same session (matching the
+2026-07-14 visit). Church then installed a new UniFi network partway
+through, changing the subnet to `192.168.1.0/24` — new Wing IP is
+`192.168.1.137`. Updated `config/default.json` (`wing.host`),
+`docs/MEASUREMENT_RIG.md`, and the usage-example comment in
+`scripts/read-console-names.mjs`. Re-verified OSC on the new address with
+a fresh `dump-wing-state.mjs` run — same clean result (4238/4400
+answered), console config unchanged.
+
+**Troubleshooting note for next time an IP "doesn't work"**: spent real
+effort chasing what looked like a genuine network problem (ICMP "host
+unreachable", zero ARP resolution for the target, gateway reachable fine)
+and got as far as diagnosing/ruling out UniFi client isolation as a
+plausible cause (checked, was already off, had the user verify — not the
+actual issue but reasonable to leave off for a permanent production
+network regardless). The real cause was mundane: the user misread a digit
+off the Wing's screen (`.139` instead of `.137`). Worth remembering that
+"transposed digit" is a higher-probability explanation than "exotic
+network isolation feature" even when the symptoms look network-layer —
+should have asked for a second read of the console screen before diving
+into UniFi settings.
+
+## 2026-08-12 — Confirmed real `reaper.ini` audio-device format (finally)
+
+Two separate research attempts earlier tonight (before real hardware
+arrived) failed to find a verified `reaper.ini` format for REAPER's OSC
+control-surface line, so that was left as a GUI step rather than guessed
+at. Same caution applied to the audio-device section when it came up
+again — searched twice, found nothing but GUI walkthrough guides, no
+config-file syntax. Stayed a GUI step for the user to do, on the same
+"don't blind-edit production config" principle.
+
+Once the user did it via the GUI, the real format became readable from the
+resulting file — worth keeping now that it's actually confirmed, not
+guessed: `[audioconfig]` section, key fields are `asio_driver_name`
+(quoted string), `asio_srate` + `asio_srate_use` (the second is a 0/1 flag
+for whether to override the driver's own rate), `asio_input0`/`asio_input1`
+and `asio_output0`/`asio_output1` (0-indexed channel range), and
+`asio_bsize` + `asio_bsize_use` — importantly, `asio_bsize_use=0` after
+setting the device meant REAPER was **not** overriding the ASIO driver's
+own buffer setting, so the buffer size actually has to be changed in the
+driver's own control panel (SoundGrid Driver Control Panel, in this case),
+not REAPER's dialog — REAPER's own buffer field doesn't take effect unless
+that flag is on. If this needs setting again on a fresh REAPER install
+without the ASIO SDK trick's verify-then-edit workflow, this format is now
+known-good — but still worth confirming against the specific REAPER
+version, since ini formats can drift across versions.
+
+## 2026-08-12 — First real hardware session: OSC live, SoundGrid one step away
+
+Mini PC is now physically at church, connected to the real Wing (network
+topology: WiFi → church network for OSC, isolated switch → SoundGrid card
+for audio — see `CHECKLIST.md`'s 2026-08-12 results for the full setup).
+Full narrative and diagnostic detail lives there; this entry is the judgment
+calls worth remembering.
+
+**Didn't install any of the "SoundGrid Studio + eMotion ST" bundles Waves
+Central's catalog offered.** Went looking for the free "SoundGrid Studio"
+(confirmed it used to exist as a standalone free download via a Waves forum
+post) but Waves Central's current "All Products" search only surfaced it
+bundled with paid eMotion ST mixer tiers — verified these are real paid
+SKUs via actual Sweetwater/B&H retail listings, not assumed. Flagged this
+to the user rather than picking one and risking an unwanted paid
+activation. User instead found and installed the correct free app
+("SuperRack SoundGrid," distinct from the already-installed "SuperRack
+Performer") via Waves' own site, from something they half-remembered off a
+YouTube video. Lesson: Waves' product catalog has real traps where a
+"free" capability is only reachable bundled with a paid product under a
+different-but-similar name — don't assume the first catalog match is the
+free path, and a user's fuzzy memory of a video is sometimes more reliable
+than the current in-app catalog.
+
+**Diagnosed the SuperRack SoundGrid network-port issue from logs, not
+guesswork.** `SGDawNodeService.log` showed the correct NIC
+(`58:47:ca:7a:1e:6b`) successfully activated (`retval: true`) right before
+launching SuperRack SoundGrid, then reset to `00:00:00:00:00:00` ("None")
+immediately after launch, followed by `Could not Start Kernel Driver
+Streaming err: -1036`. SuperRack SoundGrid's own log corroborates: `"The
+selected network port is [00:00:00:00:00:00 - None]"`. This is a solid,
+evidence-based diagnosis, not inference from absence like some earlier
+findings this project has had to walk back — trust it.
+
+**Looked for a way to fix the network-port selection without a GUI click,
+found none, and stopped rather than force it.** Checked
+`HKCU\SOFTWARE\Waves Audio\SPRK` (only holds window-position data) and
+searched for a settings file across all Waves AppData/ProgramData
+locations — nothing relevant. Same discipline as the REAPER OSC
+`reaper.ini` situation earlier: don't blind-edit undocumented third-party
+app state just because the alternative is "one someone has to click a
+dropdown." The fix is genuinely a 10-second GUI action (Settings → select
+the same NIC already set in the Driver Control Panel), not worth the risk
+of guessing at an internal format with zero documentation.
+
+**Confirmed the Wing is a first-class SoundGrid device**, not a generic
+fallback — `ProgramData\Waves Audio\SoundGrid IO Modules\SoundGrid Wing
+Control.bundle` exists and references `Behringer_WING_v2.wfi` specifically.
+
+## 2026-07-27 — Machine still slept despite "never": Modern Standby, not the idle timer
+
+Earlier this session the power plan was set to Ultimate Performance with
+standby/hibernate timeouts confirmed 0 (never) on both AC/DC — verified via
+`powercfg /query`. User reported the machine was still going to sleep on its
+own. Re-checked: the idle-timer setting was still genuinely 0/never, but
+`Get-WinEvent` on Kernel-Power (event IDs 506/507) showed the system
+actually entering/exiting Modern Standby repeatedly all day, with a very
+distinctive pattern — exit standby, then re-enter again just ~25-31 seconds
+later, over and over (8:07am, 9:58am, 12:12/24/31pm, 3:43pm). That's not
+idle-timeout sleep; it's a wake-timer-driven maintenance cycle.
+
+Root cause: this hardware uses **Modern Standby (S0 Low Power Idle)**,
+which Windows can engage based on a screen-off/no-foreground-need heuristic
+**independent of** the classic "Sleep after" idle timer — a laptop-oriented
+design (periodic brief wake for background sync) that reads as "randomly
+sleeping" on a desktop meant to stay fully live. Checked for a Group Policy
+override first (none found) before concluding this was the actual
+mechanism, not a setting that silently reverted.
+
+Fix: `HKLM\SYSTEM\CurrentControlSet\Control\Power\PlatformAoAcOverride`
+(DWORD) = `0` forces classic S3 sleep instead of Modern Standby — S3 *is*
+purely idle-timer driven, so the existing "never" setting will actually
+hold once it's active. Applied via an elevated call, **but this needs a
+reboot to take effect and one hasn't happened yet** (user's choice, to
+avoid interrupting work in progress) — don't assume this is fixed until
+confirmed post-reboot. Not guaranteed to work if this hardware's firmware
+has no legacy S3 fallback at all; if sleep continues after reboot, that's
+the likely explanation, and BIOS/UEFI power-state options or third-party
+keep-awake tooling would be the next thing to try.
+
+## 2026-07-27 — Waves demo-mode/license-seat issue: RESOLVED
+
+Follow-up to the entry below. User worked through a deactivation flow in
+Waves Central (screen showed "StudioVerse: Mix Unlock" and "Waves Essential"
+licenses targeted for deactivation, machine labeled "Waves PC" — presumably
+freeing the seat these were checked out under so this machine could get a
+full activation). License file went from 635 bytes to 58KB, fresh login
+token landed. Confirmed the actual fix by floating all 4 vocal-chain plugin
+windows (PSE, Tune Real-Time, RCompressor, F6) and having the user visually
+check — no demo watermark, all clean. This was the last blocker for a
+meaningful B0.1; what remains is purely hardware (no Wing on the office
+network, no SoundGrid card/driver yet).
+
+## 2026-07-27 — B0.2 OSC control confirmed working; feedback direction didn't
+
+User enabled REAPER's OSC control surface (Preferences → Control/OSC/web,
+"Local port" mode, listen port 8000). Ran `scripts/test-reaper-osc.mjs`
+against Tune Real-Time's `Scale Root` param (`/track/1/fx/2/fxparam/13/value`)
+— the script's own UDP listener never received feedback back from REAPER, but
+directly reading the parameter's true value via a ReaScript check afterward
+confirmed it landed exactly on the last value the OSC script sent. **External
+OSC control of a named FX parameter is proven working** — don't be fooled by
+the missing feedback into thinking control itself failed.
+
+The feedback gap is unexplained, not just unfixed: "Local port" mode's config
+dialog never asked for a remote/device port to push feedback to (unlike
+REAPER's "Configure device IP+device port" mode), so the working theory is
+that mode is receive-oriented rather than fully bidirectional — but this is a
+guess, not verified against REAPER's actual OSC implementation. If a future
+session needs live feedback (e.g. a touch UI showing current FX state), try
+reconfiguring as "Configure device IP+device port" with an explicit device
+port before assuming something is broken.
+
+## 2026-07-27 — PSE/Tune Real-Time/F6: FX-list registration ≠ fully licensed
+
+While setting up REAPER's B0 vocal chain: these three plugins didn't show up
+in REAPER's FX list at all right after the Waves Central download finished
+(258 other plugin bundles did). Traced it to each plugin's `Info.xml` having a
+`LicenseGUID` — REAPER's WaveShell only exposes a plugin to the host if it
+recognizes an active license for that specific GUID, and structurally these
+bundles are identical to ones that DID register (compared F6.bundle vs
+C1.bundle byte-for-byte apart from that one field). A license refresh in
+Waves Central got all three to register.
+
+**But registering in the FX list still isn't the same as being licensed** —
+the user found PSE/Tune RT/F6 running in demo mode in REAPER (periodic
+muting) even after they showed up. Working theory: these same plugins (+
+SuperRack) were previously installed on a different PC, and the license seat
+may still be checked out there, so this machine gets a demo activation
+instead of a full one. If this happens again: check Waves Central for
+seat/activation status per-machine, not just "is the plugin visible in the
+DAW" — visibility only proves the WaveShell recognizes *a* license, not that
+it's the *unrestricted* one.
+
+## 2026-07-27 — SoundGrid vs USB-C: not a conflict, two different audio paths
+
+`docs/MEASUREMENT_RIG.md` and earlier entries in this log say plainly "there
+is no SoundGrid card" — that's about wing-brain's own measurement-mic audio
+path, which is confirmed live to run over the Wing's built-in USB-C
+(`BEHRINGER WING-USB`) and always will, regardless of SoundGrid. It reads like
+it contradicts `CLAUDE.md`'s master-plan description of REAPER/SuperRack
+connecting "via a SoundGrid card" for the vocal-chain tier — it doesn't.
+**Confirmed with the user 2026-07-27: a SoundGrid card is still the real plan
+for that tier, it just hasn't physically arrived/been installed in the Wing
+yet.** Two separate audio interfaces on the same console, two separate tiers.
+Don't re-litigate this from the MEASUREMENT_RIG.md wording alone in a future
+session — it's specifically scoped to wing-brain's own capture path.
+
+## 2026-07-24 — naudiodon ships without ASIO; built it from source, checked in the recipe
+
+Setting up this repo on the mini PC (office, pre-church). `npm install` alone
+compiles naudiodon's JS binding but links it against naudiodon's **prebuilt**
+`portaudio_x64.dll`, which has `PA_USE_ASIO=0` hardcoded in the package's own
+`portaudio/msvc/portaudio.vcxproj` — confirmed by inspecting it and by
+`getHostAPIs()` showing only MME/WASAPI/WDM-KS after a normal install. The
+`src/audio/io.js` header comment ("must be built from source with the ASIO
+SDK") is directionally right but incomplete: a plain from-source build isn't
+enough either, because naudiodon only bundles PortAudio's `bin/`+`include/`,
+not the `src/` tree its own vcxproj expects, and the vcxproj has no ASIO
+source files or include paths wired in at all.
+
+- **Built a real ASIO-enabled `portaudio_x64.dll`**: cloned upstream
+  PortAudio, staged naudiodon's `build.bat`/`portaudio.vcxproj`/`portaudio.def`
+  into `portaudio/build/msvc/` (2 levels deep, matching the vcxproj's
+  `..\..\src\...` relative paths), patched the vcxproj (retarget
+  `PlatformToolset` from the ancient `v140` to whatever's actually installed,
+  `PA_USE_ASIO=0`→`1`, add the ASIO SDK's `common/asio.cpp` +
+  `host/asiodrivers.cpp` + `host/pc/asiolist.cpp` + PortAudio's own
+  `src/hostapi/asio/pa_asio.cpp`, add `ole32.lib` for the COM calls ASIO
+  needs, add `src/os/win/pa_win_version.c` — upstream PortAudio split
+  `PaWinUtil_GetOsVersion` out of `pa_win_util.c` at some point after
+  naudiodon's vcxproj was last touched, so the file list was stale and the
+  link failed until this was added). Applied the known SDK bug patch
+  (`delete lpdrv` → `delete [] lpdrv` in `asiolist.cpp`'s
+  `deleteDrvStruct()`, see PortAudio's own `ASIO-README.txt`) since our SDK
+  copy (2.3.4, 2025-10-15) still has it.
+- **The ASIO SDK itself is not fetched automatically, on purpose.** Steinberg
+  requires accepting their license to get it (a GPLv3 option opened up
+  October 2025 alongside the older proprietary one) — that's an acceptance
+  only a human should make. The user downloaded it themselves; it's cached at
+  `wing-brain/.audio-build/ASIO-SDK.zip` (gitignored — Steinberg's SDK can't
+  be legally redistributed, proprietary or GPLv3 copy alike, so it stays
+  local to whichever machine has it, not in the repo).
+- **The whole recipe is now `scripts/build-portaudio-asio.ps1`, committed.**
+  Rerun it any time `node_modules` gets wiped/reinstalled — a plain
+  `npm install` silently regenerates the non-ASIO DLL with no error, so this
+  would otherwise be a silent regression. Verified idempotent from a cold
+  `.audio-build/` (deletes and re-clones PortAudio, re-extracts the SDK,
+  rebuilds, reinstalls into `node_modules/naudiodon/portaudio/bin/`, reruns
+  `npm rebuild naudiodon`, and checks `getHostAPIs()` for `ASIO` before
+  reporting success).
+- **PowerShell gotcha hit twice while writing the script**: `git clone` and
+  `npm rebuild` both write normal progress to stderr; under
+  `$ErrorActionPreference = 'Stop'` (needed everywhere else in the script)
+  that stderr chatter gets promoted into a terminating error even though the
+  command exits 0. Fixed by dropping to `'Continue'` around those two calls
+  specifically and checking `$LASTEXITCODE` by hand instead.
+- **State as of this session: ASIO is compiled in and the driver enumerator
+  runs (confirmed via its live COM scan), but reports 0 ASIO drivers** —
+  expected, since no ASIO driver is installed and no audio interface is
+  physically connected on this office PC. `getHostAPIs()`/`getDevices()`
+  won't show anything real until the Wing's SoundGrid/USB interface is
+  connected and its driver installed at church. That verification is still
+  open — this only confirms the *toolchain* is ready, not that a device will
+  be seen.
+
 ## 2026-07-17 — Settings declutter + audio-device dropdowns
 
 - **Removed the raw-JSON config editor ("Advanced" card).** The user will never

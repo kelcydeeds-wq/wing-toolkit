@@ -92,6 +92,7 @@ test('a verify mismatch is reported as verify-failed with the offending address'
   const flaky = {
     ready: real.ready,
     send: (address, args) => real.send(address, args),
+    sendFloat: (address, args) => real.sendFloat(address, args),
     get: async (address, opts) => {
       if (address === '/ch/4/fdr') return [-999]; // never matches what was written
       return real.get(address, opts);
@@ -146,6 +147,7 @@ test('applyRemap stops at the first verify failure and does not attempt the rema
   const flaky = {
     ready: real.ready,
     send: (address, args) => { if (address.startsWith('/ch/4/')) writesToCh4++; real.send(address, args); },
+    sendFloat: (address, args) => { if (address.startsWith('/ch/4/')) writesToCh4++; real.sendFloat(address, args); },
     get: async (address, opts) => (address === '/ch/4/fdr' ? [-999] : real.get(address, opts))
   };
 

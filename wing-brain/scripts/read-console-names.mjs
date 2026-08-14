@@ -17,7 +17,7 @@
 //
 // Usage:
 //   node scripts/read-console-names.mjs --mock
-//   node scripts/read-console-names.mjs --host 192.168.25.80 --port 2223
+//   node scripts/read-console-names.mjs --host 192.168.1.137 --port 2223
 
 import path from 'node:path';
 import fs from 'node:fs';

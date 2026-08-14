@@ -4,7 +4,7 @@
     "port": 3000
   },
   "wing": {
-    "host": "192.168.25.80",
+    "host": "192.168.1.137",
     "port": 2223
   },
   "system": {
@@ -25,12 +25,12 @@
     "confirmed": false
   },
   "audio": {
-    "comment": "TODO(church): inputDevice/outputDevice are the OLD MME-era device name (confirmed 2026-07-14 for the sox/waveaudio implementation, since replaced -- see docs/DECISIONS.md). ASIO typically exposes a whole interface as ONE bidirectional device, often under a different name than its MME counterpart -- run naudiodon.getDevices() (or scripts/list-audio-devices.mjs, once updated) against the real console network and confirm the actual ASIO device name before trusting these values live. referenceInputChannel/micInputChannel (1/2) match MEASUREMENT_RIG.md's confirmed USB1=reference/USB2=mic taps and are honored by the code (src/audio/io.js), not just documentation.",
+    "comment": "CONFIRMED 2026-08-14: this PC (the 'Waves PC') has NO direct USB-C connection to the Wing anymore -- only 'Waves SoundGrid ASIO' (64 in/64 out) shows up via naudiodon.getDevices(). MEASUREMENT_RIG.md's whole signal path is preserved, just moved from the Wing's native `USB` io-group to the SoundGrid `MOD` io-group: reference tap is now /io/out/MOD/20 (mirrors the old USB/1 <- MAIN/4 tap), mic tap is /io/out/MOD/21 (mirrors the old USB/2 <- MTX/6 tap), and Aux 1 'PC' now sources /io/in/MOD/1 for sweep playback (io.js hardcodes sweep output to ASIO channels 1-2, no offset option -- this happens to be the same MOD slot channel 1/CARD MIC uses for its ALT path from the 2026-08-12 session; harmless for a one-off measurement session with no live REAPER/SuperRack processing active, but not a clean permanent assignment -- reconsider if this ever needs to run during a live show). referenceInputChannel/micInputChannel are 1-indexed ASIO channel positions (see src/audio/io.js's extractChannels) matching MOD slot number directly (Wing-1 Exp <n> = MOD slot n).",
     "sampleRate": 48000,
-    "inputDevice": "IN 1-2 (BEHRINGER WING-USB)",
-    "outputDevice": "OUT 1-2 (BEHRINGER WING-USB)",
-    "referenceInputChannel": 1,
-    "micInputChannel": 2,
+    "inputDevice": "Waves SoundGrid ASIO",
+    "outputDevice": "Waves SoundGrid ASIO",
+    "referenceInputChannel": 20,
+    "micInputChannel": 21,
     "splDbOffset": null,
     "sweep": {
       "type": "ess",

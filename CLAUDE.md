@@ -45,6 +45,14 @@ corrected shapes, so you don't have to re-derive them:
 - Fader: `/<kind>/<n>/fdr` (channel/bus/main/mtx/dca) — not `"fader"`.
 - Mains are numbered `/main/1..4` — **there is no `"lr"` stereo bus.**
 - Channel name/color: `/ch/<n>/name`, `/ch/<n>/col` — not `config/name`.
+- **`/main/N/name`, `/mtx/N/name`, `/bus/N/name` are CONFIRMED** (church
+  visit, 2026-08-14) — same pattern as `/ch/N/name`. Verified live via
+  `scripts/read-console-names.mjs`: 28/28 addresses answered, and every
+  name matched the physical scribble strips (mains MAINS/SUBS/BROADCAST/
+  LOBBY, buses 1-16 the IEM/drum/vox mix names, matrices 1/2/3/5/6 named,
+  4/7/8 blank/unused — confirmed as genuinely-unused slots, not a broken
+  address, since a broken address pattern would silently fail for a whole
+  KIND at once). Run that script again after any console-side renaming.
 - EQ bands are flat leaves: `/eq/1f /eq/1g /eq/1q` (not nested). Channels
   additionally have fixed low/high shelf bands `/eq/lf|lg|lq|leq` and
   `/eq/hf|hg|hq|heq`. Buses/mains/mtx have **6 numbered bands, no shelf**.

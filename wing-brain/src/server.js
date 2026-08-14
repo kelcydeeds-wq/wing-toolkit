@@ -503,6 +503,14 @@ wss.on('connection', (ws) => {
         case 'test_routing': await session.testRoutingForOutput(msg.physicalOutputId); break;
         // "Restore All Patches" escape hatch — works regardless of session state.
         case 'restore_patches': session.restoreAllPatches(); break;
+        // Certification-day repeatability test: N sweeps, one output, fixed
+        // verify position, back-to-back. Diagnostic only -- never touches
+        // this.results / recommendations.
+        case 'repeat_sweep': {
+          const runs = await session.repeatSweep(msg.physicalOutputId, msg.count || 5);
+          ws.send(JSON.stringify({ event: 'repeatSweepResult', payload: { physicalOutputId: msg.physicalOutputId, runs } }));
+          break;
+        }
       }
     } catch (err) {
       ws.send(JSON.stringify({ event: 'error', payload: { message: String(err.message || err) } }));

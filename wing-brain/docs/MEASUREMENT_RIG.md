@@ -6,7 +6,12 @@ that day was discarded — construction noise). Reproduce this for a real tune.
 
 ## Hardware / network
 - **Console:** Behringer WING ("FusionFOH"), firmware 3.0.5.
-- **Wing IP / OSC:** `192.168.25.80` : `2223` (in `config/default.json` → `wing`).
+- **Wing IP / OSC:** `192.168.1.137` : `2223` (in `config/default.json` → `wing`).
+  Was `192.168.25.80` as of the 2026-07-14 visit — changed 2026-08-12 when
+  the church replaced their network with a new UniFi setup (new subnet,
+  `192.168.1.0/24`). If this stops matching again, re-read it off the
+  Wing's own network setup screen rather than assuming — don't trust this
+  file blindly across a network change.
 - **Audio interface:** the Wing's built-in **USB-C audio** — appears to the PC as
   `IN 1-2 / OUT 1-2 (BEHRINGER WING-USB)`. There is **no SoundGrid card**.
   Wing USB config `usbacfg = 48/48` @ 48 kHz. (`config` → `audio.inputDevice`/

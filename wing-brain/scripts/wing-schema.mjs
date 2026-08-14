@@ -32,6 +32,11 @@ export function channelStrip(n) {
     kind: 'channel', index: n, path: p,
     name: `${p}/name`,
     col: `${p}/col`,
+    // Confirmed live 2026-08-12 (channel-swap work): a plain index, unlike
+    // col -- writing the raw value back directly round-trips correctly, no
+    // +1 offset needed. Was missing from this schema entirely before, so a
+    // channel's icon silently didn't travel on any earlier remap/copy.
+    icon: `${p}/icon`,
     // Gain is NOT a channel address -- it lives on the physically patched
     // input. Read these two first, then build the /io/in/<grp>/<in>/...
     // address with ioInputFields() below (see dump-wing-state.mjs's
@@ -154,12 +159,44 @@ function filterFields(p) {
 function dynamicsFields(p) {
   return {
     gateOn: `${p}/gate/on`,
+    // Confirmed live 2026-08-12 (channel-swap work): same gating behavior as
+    // dyn/mdl below, on the gate section -- "GATE" (full: thr/range/att/
+    // hld/rel/acc/ratio) vs "LA" (reduced: no thr etc. at all). Must be
+    // written before the model-dependent gate fields.
+    gateModel: `${p}/gate/mdl`,
     gateThreshold: `${p}/gate/thr`,
+    gateRange: `${p}/gate/range`,
+    gateAttack: `${p}/gate/att`,
+    gateHold: `${p}/gate/hld`,
+    gateRelease: `${p}/gate/rel`,
+    // Unconfirmed meaning (TODO(church)) but a plain continuous value like
+    // its siblings -- safe to carry verbatim regardless.
+    gateAcceleration: `${p}/gate/acc`,
+    // Single-element string reply (e.g. "1:3"), like name/eq-mdl -- not a
+    // continuous float, no offset.
+    gateRatio: `${p}/gate/ratio`,
     dynOn: `${p}/dyn/on`,
+    // Confirmed live 2026-08-12 (channel-swap work): the dynamics processor
+    // has a model selector (e.g. "COMP" full-featured vs "LA" opto-style
+    // leveling amp) that GATES which of thr/ratio/att/rel even exist --
+    // an "LA"-model channel silently drops writes to dyn/thr etc. entirely.
+    // Must be written before the model-dependent fields below so a copy
+    // lands on a channel with a different model already selected. Value is
+    // a plain string (single-element reply, like name), no offset/float.
+    dynModel: `${p}/dyn/mdl`,
+    dynMix: `${p}/dyn/mix`,
+    dynMakeupGain: `${p}/dyn/gain`,
     dynThreshold: `${p}/dyn/thr`,
     dynRatio: `${p}/dyn/ratio`,
+    dynKnee: `${p}/dyn/knee`,
+    // Single-element string replies ("RMS"/"LOG") -- enums, not continuous.
+    dynDetection: `${p}/dyn/det`,
     dynAttack: `${p}/dyn/att`,
-    dynRelease: `${p}/dyn/rel`
+    dynHold: `${p}/dyn/hld`,
+    dynRelease: `${p}/dyn/rel`,
+    dynEnvelope: `${p}/dyn/env`,
+    // Boolean-shaped (0/1), like dynOn/gateOn -- plain send(), not continuous.
+    dynAuto: `${p}/dyn/auto`
   };
 }
 
@@ -178,12 +215,34 @@ function shelfEqBand(p, letter) {
 /** Channel EQ: 4 numbered parametric bands + fixed low/high shelf. */
 function channelEqFields(p) {
   return {
+    // Confirmed live 2026-08-12 (channel-swap work): eq/mdl selects between
+    // at least "STD" (the 4-numbered-band + l/h-shelf shape below, what this
+    // whole schema assumes) and "SOUL" -- an entirely different topology
+    // with fixed lo-mid/hi-mid bands instead of the 4 parametric ones (see
+    // soulMidBands below) and no q/type on its shelves. A channel's eq/mdl
+    // is NOT necessarily "STD" -- must be copied first, same reason as
+    // dyn/mdl, or the model-dependent fields below silently no-op.
+    eqModel: `${p}/eq/mdl`,
     eqOn: `${p}/eq/on`,
     eq: [
       ...Array.from({ length: EQ_BANDS }, (_, i) => numberedEqBand(p, i + 1)),
       shelfEqBand(p, 'l'),
       shelfEqBand(p, 'h')
-    ]
+    ],
+    // Only meaningful under eq/mdl "SOUL" -- ignored (reads null, skipped)
+    // by copyChannel on a "STD" channel. lmf3/hmf3's exact meaning is
+    // unconfirmed (TODO(church)) but its raw value round-trips like any
+    // other continuous param, so it's safe to carry verbatim regardless.
+    soulMidBands: {
+      lowMidFreq: `${p}/eq/lmf`,
+      lowMidFreq3: `${p}/eq/lmf3`,
+      lowMidQ: `${p}/eq/lmq`,
+      lowMidGain: `${p}/eq/lmg`,
+      highMidFreq: `${p}/eq/hmf`,
+      highMidFreq3: `${p}/eq/hmf3`,
+      highMidQ: `${p}/eq/hmq`,
+      highMidGain: `${p}/eq/hmg`
+    }
   };
 }
 
@@ -274,6 +333,62 @@ export function leafAddresses(strip) {
   const { kind, index, path, ...fields } = strip;
   walk(fields);
   return out;
+}
+
+// leafAddresses() flattens strips down to bare address strings, so a caller
+// writing generically (apply-remap.mjs's channel-copy loop) has no field-name
+// context left to know which addresses are continuous (must be sent as OSC
+// floats, per osc.js's sendFloat doc comment and CLAUDE.md's confirmed rule —
+// the Wing silently ignores an integer-typed write for these) vs discrete
+// (on/off, index, string — plain send() is correct). Matched by address
+// SUFFIX since that's the only thing surviving the flatten. Keep in sync with
+// the field groups above (filterFields/dynamicsFields/*EqFields/mixFields/
+// sendFields/mainSendFields) if the schema changes.
+const CONTINUOUS_ADDRESS_SUFFIX = new RegExp(
+  '(' + [
+    'flt/lcf',            // HPF frequency
+    'gate/thr',           // gate threshold
+    'gate/(range|att|hld|rel|acc)', // additional gate continuous params
+    'dyn/thr', 'dyn/ratio', 'dyn/att', 'dyn/rel', // dynamics
+    'dyn/(mix|gain|knee|hld)',   // additional dynamics continuous params
+    'eq/\\d[fgq]',         // numbered EQ bands: 1f/1g/1q .. 6f/6g/6q
+    'eq/[lh][fgq]',        // shelf EQ bands: lf/lg/lq/hf/hg/hq
+    'eq/[lh]m(f3?|[qg])',  // "SOUL" model mid bands: lmf/lmf3/lmq/lmg/hmf/hmf3/hmq/hmg
+    'fdr',                 // fader
+    'pan',                 // pan
+    'send/\\d+/lvl',       // bus send level
+    'main/\\d+/lvl'        // main send level
+  ].join('|') + ')$'
+);
+
+/** True if `address` must be sent as an OSC float (osc.js's sendFloat), not
+ *  the default send() — see CONTINUOUS_ADDRESS_SUFFIX above for why. */
+export function isContinuousParam(address) {
+  return CONTINUOUS_ADDRESS_SUFFIX.test(address);
+}
+
+// Confirmed live 2026-08-12: most discrete params round-trip by writing back
+// exactly the raw value from a read (booleans like mute/gate-on/dyn-on, and
+// strings like name/tags/group-token, all verified this way). But INDEX-type
+// params -- an enumerated position within a list, not a boolean or a string
+// -- are the opposite: raw is 0-indexed on read, but the write wants raw+1
+// (write 8 -> lands as raw 7; write 9 -> lands as raw 8). Confirmed on TWO
+// independent params this way (col = position in the color palette, in/conn/in
+// = position within an input group), so this reads as a real property of how
+// index params work on this console, not a one-off quirk of either address.
+// Not a float-typing issue either -- retried col as an OSC float with no
+// change. If a future schema addition turns out to be index-typed too (watch
+// for a captured raw value that's consistently one less than expected after
+// a copy), add its suffix here rather than special-casing it elsewhere.
+const INDEX_ADDRESS = /\/(col|in\/conn\/in)$/;
+
+/** The value to actually send for `address` given a value freshly read from
+ *  another channel/bus (i.e. copying a param from a source strip to a
+ *  destination strip during a remap) -- applies the index write-offset
+ *  above, passes every other address through unchanged. */
+export function writeValueForCopy(address, rawValue) {
+  if (INDEX_ADDRESS.test(address) && typeof rawValue === 'number') return rawValue + 1;
+  return rawValue;
 }
 
 /**

@@ -424,6 +424,45 @@ export class TuneSession {
   }
 
   /**
+   * Certification-day repeatability test: run `count` sweeps back-to-back
+   * on ONE physical output at the fixed verify position, without walking
+   * the normal multi-position/multi-output wizard. Reuses
+   * measureOnePhysicalOutput() (solo/inject/restore + all its confidence/
+   * clip/SNR checks) so results are directly comparable to a normal
+   * session's rows, just called in a tight loop instead of once per
+   * position. Every call's result is marked excludeFromCorrection so it
+   * never lands in this.results / feeds recommendations -- this is a
+   * diagnostic, not part of a real tune.
+   */
+  async repeatSweep(physicalOutputId, count = 5) {
+    if (this.state !== 'idle' && this.state !== 'done' && this.state !== 'review') {
+      throw new Error('session already running');
+    }
+    const physicalOutput = this.cfg.physicalOutputs.find((o) => o.id === physicalOutputId);
+    if (!physicalOutput) throw new Error(`No physicalOutput "${physicalOutputId}" in config`);
+    const bus = this.busFor(physicalOutput);
+    if (!bus) throw new Error(`${physicalOutput.label}: sourceBusId "${physicalOutput.sourceBusId}" not found in config.buses`);
+    const pos = this.room.positions.find((p) => p.id === this.room.verifyPosition);
+    if (!pos) throw new Error(`No verify position "${this.room.verifyPosition}" in room config`);
+
+    this.state = 'measuring';
+    this.emit('session', this.snapshot());
+    const runs = [];
+    try {
+      for (let i = 0; i < count; i++) {
+        this.emit('info', { message: `Repeatability sweep ${i + 1}/${count} on ${physicalOutput.label} at ${pos.label}…` });
+        const result = await this.measureOnePhysicalOutput(physicalOutput, bus, pos, { excludeFromCorrection: true });
+        runs.push(result);
+      }
+    } finally {
+      await this.wing.unmuteAll(this.activeBuses());
+      this.state = 'done';
+      this.emit('session', this.snapshot());
+    }
+    return runs;
+  }
+
+  /**
    * Guided wizard for a shared-driver physical output (e.g. one "Side
    * Fills" output driving two boxes via a passive split) — the console
    * can't isolate them electronically, only the operator physically

@@ -28,7 +28,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { makeOscTransport } from '../src/wing/osc.js';
-import { channelStrip, leafAddresses, readValue } from './wing-schema.mjs';
+import { channelStrip, leafAddresses, readValue, isContinuousParam, writeValueForCopy } from './wing-schema.mjs';
 import { seedMockConsole } from './dump-wing-state.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -112,14 +112,30 @@ export async function copyChannel(transport, move, { execute, timeoutMs, clearSo
     return { from, to, name, status: 'dry-run', writeCount: writes.length };
   }
 
-  for (const w of writes) transport.send(w.address, [readValue(w.value)]);
+  // Continuous params (fader/gain/freq/Q/delay-style) MUST go out as OSC
+  // floats -- the Wing silently ignores an integer-typed write for these
+  // (see wing-schema.mjs's isContinuousParam / osc.js's sendFloat doc
+  // comment). A whole-number JS value like -18 or 3 would otherwise get
+  // auto-typed 'i' by the default send() and no-op on the console.
+  //
+  // isContinuousParam is address-pattern-based, but some addresses (e.g.
+  // dyn/ratio) change representation depending on the channel's selected
+  // model -- numeric under one model, a stepped string enum ("6:1") under
+  // another (confirmed live 2026-08-12). A string can never be a valid OSC
+  // float argument, so gate on the actual value's runtime type too, not
+  // just the address, or a model-dependent string gets silently dropped.
+  for (const w of writes) {
+    const value = writeValueForCopy(w.address, readValue(w.value));
+    if (isContinuousParam(w.address) && typeof value === 'number') transport.sendFloat(w.address, [value]);
+    else transport.send(w.address, [value]);
+  }
   // DCA + mute-group membership travel automatically: `/ch/N/tags` is a leaf in
   // the channel strip, so it was read from the source above and is retargeted +
   // written in the loop just above (confirmed model, church 2026-07-14). The old
   // per-index `/ch/N/grp/dca/K` sends were removed — those addresses don't exist.
   for (const s of references?.sends || []) {
     transport.send(`/ch/${to}/send/${s.bus}/on`, [1]);
-    if (s.level !== null && s.level !== undefined) transport.send(`/ch/${to}/send/${s.bus}/lvl`, [s.level]);
+    if (s.level !== null && s.level !== undefined) transport.sendFloat(`/ch/${to}/send/${s.bus}/lvl`, [s.level]);
   }
   log(`  wrote ${writes.length} parameter(s), verifying...`);
 
