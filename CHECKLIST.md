@@ -419,6 +419,52 @@ earlier today): actually listening through any of these chains, tuning
 any parameter, or testing the Wing-side external-FX-insert routing on
 channels 2/4/5.
 
+### 2026-08-14 (same touchpoint, continued) — "Elevation Worship style" ambience/character pass added on top, still ZERO Wing interaction
+
+User asked, still mid-service, to push the category chains above further
+toward a specific production style ("Elevation Worship style") rather than
+generic clean live-sound processing. Translated into concrete additions
+via `scripts/build-elevation-style-fx.lua` — **appended** to the existing
+gate/EQ/comp chains (nothing removed/reordered), same "confirm plugin
+names against `reaper-vstplugins64.ini` first" discipline, same "no
+parameter values set, chains only" convention.
+
+- **Vocals** (Main/VERN/RENITA/SCOTT): + Silk Vocal (Waves' "air"/polish
+  plugin — the modern-CCM vocal-shimmer signature) → H-Delay (rhythmic
+  echo) → H-Reverb (big hall/plate).
+- **Pads/Keys**: + MetaFlanger (subtle width/movement) → H-Reverb (large,
+  lush) — the genre's "atmospheric bed."
+- **Lead Guitar**: + H-Delay → H-Reverb → MetaFlanger — the ambient
+  "shimmer" electric-guitar texture that's arguably the single most
+  recognizable element of this production style.
+- **Rhythm Guitar**: + H-Delay → H-Reverb (lighter/more rhythmic than
+  lead, avoids two guitars fighting for the same wash).
+- **Acoustic Guitar, Banjo**: + H-Reverb only (moderate — stay present,
+  not washed out).
+- **Snare Top, Rack, Floor, Drum Pad, OH**: + H-Reverb (room/glue —
+  snare top's is meant to be the "big modern snare" specifically).
+- **Bass**: + Kramer Tape (tape warmth/saturation) **only** — no
+  reverb/delay, deliberately.
+- **Left intentionally dry, on purpose, not by omission** — logged with
+  reasons in the script's own report and worth repeating here since it's
+  easy to mistake for something forgotten: **CARD MIC** (pastor's speech
+  mic — reverb reads as a mixing mistake on a sermon, not a style),
+  **KICK OUT** and **BASS's reverb/delay** (a tight, dry low end is part
+  of what makes the big verbs up top read as "big" — reverb down there
+  just muddies everything), **SNARE BOT** (a phase/reinforcement mic, not
+  meant to carry its own ambience).
+
+All 19 tracks confirmed via `list-tracks.lua` (Main/VERN/RENITA/SCOTT: 7
+FX each; Lead Guitar: 6; Rhythm Guitar: 5; most instrument tracks: 3-4;
+the three intentionally-dry tracks: 3 each, unchanged from the prior
+pass). Project re-saved (331KB, up from 182KB).
+
+**Same caveat as above, doubled**: none of this has been heard yet. Verb/
+delay wet levels, tempo-sync on the delays, reverb decay times — all of it
+needs a human listening live before this is anywhere near a Sunday-ready
+sound; right now it's a structurally-correct starting point, not a
+finished mix.
+
 ### 2026-08-12 (evening, after the channel remap) — LIVE ROUTING: SoundGrid round-trip built, then pivoted mid-session to an insert-based vocal architecture
 
 Same evening as the channel remap below, immediately after. Goal: get every
