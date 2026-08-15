@@ -373,6 +373,52 @@ Scene name/number was not captured before the switch (a quick OSC query
 attempt — `/-scene/current`, `/scene`, `/$scene` — returned nothing under
 time pressure) — **ask the user which scene to reload**, don't guess.
 
+### 2026-08-14 (later, during a live service) — REAPER-only: category FX chains built for all 15 non-vocal channels, ZERO Wing interaction
+
+User was mid-service at the console; explicitly required **no console
+writes of any kind** for this touchpoint. Everything below is REAPER-side
+only — no OSC calls were made to the Wing at all.
+
+Redirected from the geometry-ground-truth ask to: analyze every REAPER
+channel and load an "ideal" starting-point FX chain per instrument. Vocals
+(Main/VERN/RENITA/SCOTT) already had their chain from earlier the same
+day; built the other 15 via a new script,
+`scripts/build-instrument-chains.lua`. Checked
+`reaper-vstplugins64.ini` first to confirm every plugin used is actually
+registered on this machine (not guessed) — large Waves library available.
+
+No specific knob/parameter values were set on any plugin — same
+convention as the existing vocal-chain scripts. These are starting-point
+**chains** (which processors, in what order); the actual settings need a
+human dialing them in by ear once there's live signal to listen to. All
+19 tracks now have FX loaded (confirmed via `scripts/list-tracks.lua`);
+project re-saved to `wing-brain/data/wing-live-session.rpp` (182KB, up
+from 77KB) so this survives to next session too.
+
+Category logic (standard live-sound practice, not per-channel guessing):
+| Category | Chain | Channels |
+|---|---|---|
+| Speech mic | PSE → RCompressor → RDeEsser | CARD MIC |
+| DI/line (no bleed to gate) | REQ 6 → RCompressor | PADS PIANO, KEYS, DRUM PAD |
+| Mic'd/plucked, gated | PSE → REQ 6 → RCompressor | BANJ0, ACOUSTIC/LEAD/RHYTHM GUITAR |
+| Bass | RCompressor → RBass → REQ 6 | BASS |
+| Close-mic'd drum, gated | PSE → REQ 6 → RCompressor | SNARE TOP, SNARE BOT, RACK, FLOOR, KICK OUT |
+| Overhead (ungated — preserves cymbal decay) | REQ 6 → RCompressor | OH |
+
+**Assumption worth flagging**: guitars (acoustic/lead/rhythm) were treated
+as generically mic'd/DI'd and given a gate+EQ+comp chain — deliberately
+did **not** add amp-simulation plugins (`GTR Amp`/`GTR Stomp`, also
+available) since it's unknown whether lead/rhythm guitar are DI'd
+(needing a sim) or already mic'd on a real amp (where a sim would
+double-process the tone incorrectly). Worth confirming with the user which
+it is, and adding amp sim only for genuinely DI'd channels.
+
+**Not done, needs the console + a live mic** (blocked both by "no console
+writes right now" and by the still-broken wing-brain audio capture from
+earlier today): actually listening through any of these chains, tuning
+any parameter, or testing the Wing-side external-FX-insert routing on
+channels 2/4/5.
+
 ### 2026-08-12 (evening, after the channel remap) — LIVE ROUTING: SoundGrid round-trip built, then pivoted mid-session to an insert-based vocal architecture
 
 Same evening as the channel remap below, immediately after. Goal: get every
