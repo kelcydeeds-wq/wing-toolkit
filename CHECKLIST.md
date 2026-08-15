@@ -465,6 +465,60 @@ needs a human listening live before this is anywhere near a Sunday-ready
 sound; right now it's a structurally-correct starting point, not a
 finished mix.
 
+### 2026-08-14 (same touchpoint, continued) — tier + latency audit found two real problems in the style pass; both fixed
+
+User asked to verify every plugin used is (a) in the Waves Essential
+subscription tier and (b) low-latency — a real check, not a formality,
+since neither had been considered when the style pass above was built.
+Still zero Wing interaction.
+
+**Verified against real data, not assumption, on both counts**:
+- **Latency**: wrote `scripts/check-fx-latency.lua`, which reads each
+  loaded plugin's actual reported processing latency (`TrackFX_
+  GetNamedConfigParm(..., "pdc")`) straight from the real plugin builds
+  running on this machine — ground truth, not a spec-sheet claim. Found
+  **Silk Vocal reports 1087 samples (~23ms @44.1kHz) of real latency** —
+  genuinely too high for a live insert chain (audible comb-filtering risk
+  when blended with any bleed, and real added round-trip delay). Every
+  other plugin in use reported 0-64 samples (0-1.45ms), fine.
+- **Tier**: fetched the actual current plugin list from
+  waves.com/subscriptions/essential (123 plugins) rather than guessing
+  from memory. Found **H-Reverb is NOT in the Essential tier at all**
+  (H-Comp, H-Delay, and H-EQ are; H-Reverb isn't — an easy thing to
+  assume by association and get wrong), despite being used on nearly
+  every channel. Also found **"Kramer Tape" and the tier-listed "Kramer
+  Master Tape" are different products** — Waves has both, they're not
+  interchangeable, and only the latter's tier status was confirmed, so
+  the one actually in use couldn't be assumed included.
+
+**Replacements** (all confirmed BOTH Essential-tier from the real list AND
+~0ms latency via the same real-plugin-build check, and confirmed actually
+installed on this machine before use — `scripts/check-replacement-
+latency.lua`):
+| Removed | Replaced with | Latency | Role |
+|---|---|---|---|
+| H-Reverb | TrueVerb | 0 samples | reverb, all 15 channels that had it |
+| Silk Vocal | Vitamin | 0 samples | vocal warmth/presence, 4 vocal channels |
+| Kramer Tape | OneKnob Driver | 5 samples (0.11ms) | bass warmth |
+
+Applied via `scripts/fix-fx-tier-and-latency.lua` (deletes the old
+instance by name, adds the replacement — idempotent, safe to re-run).
+**Final state, re-verified**: every plugin across all 19 channels now
+reports ≤64 samples (≤1.45ms) latency — the R-series dynamics processors
+(RCompressor/RDeEsser) are the ceiling, everything else is 0 samples.
+Full roster of 12 plugins now in use, all Essential-tier confirmed: PSE,
+Waves Tune Real-Time, RCompressor, F6, RDeEsser, REQ 6, RBass, H-Delay,
+MetaFlanger, TrueVerb, Vitamin, OneKnob Driver. Track FX counts unchanged
+(1:1 swaps) — re-verified via `list-tracks.lua`, project re-saved.
+
+**Lesson worth remembering**: plugin *family* naming is not a reliable
+guide to subscription tier or latency — H-Comp/H-Delay/H-EQ being
+Essential-tier didn't mean H-Reverb was, and "Kramer Tape" sounding like
+it should be the same thing as "Kramer Master Tape" doesn't make it so.
+Check the actual current tier list and the actual reported PDC on the
+actual machine, every time, rather than pattern-matching from plugin
+names or general Waves-catalog familiarity.
+
 ### 2026-08-12 (evening, after the channel remap) — LIVE ROUTING: SoundGrid round-trip built, then pivoted mid-session to an insert-based vocal architecture
 
 Same evening as the channel remap below, immediately after. Goal: get every
