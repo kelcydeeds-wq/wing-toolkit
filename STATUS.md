@@ -251,16 +251,30 @@ through address verification but hit a real blocker; see `CHECKLIST.md`'s
 1. **Reload the correct Wing scene first** — see the warning at the top of
    this file. Ask the user which one; don't assume.
 2. **`wing-brain`'s own audio capture is broken against the SoundGrid ASIO
-   device** — `src/audio/io.js`'s `playAndCapture()`/`captureAmbient()`
-   hang forever waiting for the ASIO stream's `'data'` event, which never
-   fires (confirmed down to a minimal 2-channel reproduction outside
-   wing-brain entirely — not a channel-count bug). This blocks the
-   repeatability test, SPL calibration, and pre-flight check — i.e. most
-   of the certification block and all of a real tune. **This is the top
-   priority next session**, ahead of anything else in this list, since
-   nothing downstream of it can be attempted. `TuneSession.repeatSweep()`
-   (session.js) + `scripts/run-repeat-sweep.mjs` are already built and
-   ready to use the moment capture works.
+   device — narrowed to naudiodon's ASIO binding specifically.**
+   `src/audio/io.js`'s `playAndCapture()`/`captureAmbient()` hang forever
+   waiting for the ASIO stream's `'data'` event, which never fires.
+   Confirmed **not** a channel-count bug, **not** "no real signal," and
+   **not** a JS-level usage mistake in `io.js`: a standalone script using
+   **WASAPI** (same device, same driver, only the host API changed)
+   successfully captured over 1MB of real audio in 3 seconds, exercising
+   the identical generic `naudiodon` read path. The bug lives in the
+   compiled `naudiodon.node` binary's ASIO-specific C++ implementation —
+   below what's practically fixable by reading source; needs real native
+   debugging next, or accept the WASAPI fallback (see below). This blocks
+   the repeatability test, SPL calibration, and pre-flight check — i.e.
+   most of the certification block and all of a real tune. **This is the
+   top priority next session**, ahead of anything else in this list.
+   `TuneSession.repeatSweep()` (session.js) + `scripts/run-repeat-sweep.mjs`
+   are already built and ready to use the moment capture works, whichever
+   way it gets fixed.
+   - **Fallback if the ASIO binding issue resists fixing**: WASAPI works,
+     but only exposes ONE fixed stereo pair for this device (not the full
+     64-channel range) — using it would mean repointing the reference/mic
+     MOD taps (currently slots 20/21) to whatever physical channels that
+     WASAPI pair actually represents (untested, likely but not confirmed
+     to be channels 1-2 — needs Wing-side OSC changes to set up, not yet
+     done since it couldn't be attempted mid-service).
 3. **REAPER's project must be saved deliberately, every session** — it
    was found completely empty (all prior work lost) at the start of the
    vocal-chain work on 2026-08-14. Rebuilt and saved to

@@ -519,6 +519,48 @@ Check the actual current tier list and the actual reported PDC on the
 actual machine, every time, rather than pattern-matching from plugin
 names or general Waves-catalog familiarity.
 
+### 2026-08-14 (same day, user in service — REAPER-only) — Audio capture bug narrowed to naudiodon's ASIO binding specifically, not wing-brain or "no signal"
+
+User asked what else could be done safely (no console writes) while in
+service. Went back to the capture hang from earlier today's certification
+attempt (see above) with a sharper isolation test.
+
+**WASAPI capture on the exact same SoundGrid hardware works fine** —
+1,146,880 bytes of real audio received in 3 seconds, a plain standalone
+script, same machine, same device driver, only the host API changed from
+ASIO to WASAPI. This proves three things at once: real audio genuinely is
+flowing from the SoundGrid card into this PC right now; `naudiodon`'s
+general read/capture mechanism is not broken; the bug is isolated
+specifically to `naudiodon`'s ASIO code path against this driver.
+
+Read `naudiodon`'s own JS wrapper (`node_modules/naudiodon/index.js`) to
+rule out a usage-pattern mistake at the JS level: it uses the standard
+Node.js `Readable` stream `_read(size)` pull mechanism identically
+regardless of host API (`doRead` → `await audioIOAdon.read(size)` →
+`ioStream.push(...)`) — the exact same JS code path was exercised
+successfully moments earlier via WASAPI. That rules out a naudiodon
+*usage* bug in `io.js` and narrows this to the compiled native binding's
+ASIO-specific C++ implementation (`naudiodon.node`, built from source
+against the Steinberg ASIO SDK per `docs/DECISIONS.md`'s ASIO build
+history) — below what's practically debuggable by reading source alone in
+a session; would need real native debugging (attach a debugger to the
+Node process during a stuck capture, or compare against a known-working
+naudiodon+ASIO+multichannel-interface example) to go further.
+
+**Real, practical fallback identified, not yet applied**: WASAPI works,
+but only exposes ONE fixed stereo pair for this device ("Line In/
+Microphone (Waves SoundGrid)", `maxInputChannels: 2`) — not the full
+64-channel range ASIO exposes. This means WASAPI can't reach the
+reference/mic taps at MOD slots 20/21 as currently configured; using it
+would require **repointing those taps to whichever physical channels this
+WASAPI stereo pair actually represents** (untested — likely channels 1-2,
+but not confirmed, and slot 1 already carries channel 1/CARD MIC's
+routing, so this needs to be worked out carefully, not assumed). That's a
+Wing-side OSC change, so it couldn't be attempted this touchpoint (no
+console writes permitted) — **first Wing-touching task for next
+session**, if the native ASIO binding issue isn't otherwise resolved
+first.
+
 ### 2026-08-12 (evening, after the channel remap) — LIVE ROUTING: SoundGrid round-trip built, then pivoted mid-session to an insert-based vocal architecture
 
 Same evening as the channel remap below, immediately after. Goal: get every
