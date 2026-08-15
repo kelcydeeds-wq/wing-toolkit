@@ -130,6 +130,11 @@ pass."
 - **`wing-brain/docs/DECISIONS.md`** — running log of every non-obvious
   judgment call made during past work sessions, newest first. Check it
   before re-deciding something that was already decided.
+- **`wing-brain/docs/REAPER_CHAINS.md`** — the per-channel FX chain design
+  for the REAPER-side instrument/vocal processing (live project file:
+  `wing-brain/data/wing-live-session.rpp`), including which plugins are
+  confirmed Waves Essential-tier and low-latency, and which channels are
+  deliberately left dry and why. Structurally built, not yet tuned by ear.
 - **`wing-brain/README.md`** — repo layout, quick start (mock mode), church
   mode config, guardrails, and current TODO(church) integration points.
 
